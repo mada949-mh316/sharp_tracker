@@ -5,6 +5,7 @@ import os
 import numpy as np
 import re
 from datetime import datetime, date
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
 CSV_PATH = "data/bets.csv"
@@ -14,15 +15,20 @@ st.set_page_config(page_title="Smart Money Tracker", layout="wide")
 
 # --- DATA LOADING ---
 def load_data():
-    if not os.path.exists(CSV_PATH):
-        return pd.DataFrame()
+    # Connect to Google Sheets using the secrets you uploaded
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    
     try:
-        df = pd.read_csv(CSV_PATH)
+        # ttl=60 means "refresh cache every 60 seconds"
+        df = conn.read(ttl=60)
+        
+        # Clean timestamps
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
         return df
     except Exception as e:
-        st.error(f"Error reading CSV: {e}")
+        st.error(f"Error reading Google Sheet: {e}")
         return pd.DataFrame()
 
 # --- HELPER: ROBUST ODDS PARSING ---
