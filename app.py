@@ -15,7 +15,7 @@ st.set_page_config(page_title="Smart Money Tracker", layout="wide")
 
 # --- DATA LOADING ---
 def load_data():
-    # Connect to Google Sheets using the secrets you uploaded
+    # Connect to Google Sheets
     conn = st.connection("gsheets", type=GSheetsConnection)
     
     try:
@@ -113,7 +113,11 @@ def categorize_bet(row):
     market = str(row.get('market', '')).lower()
     selection = str(row.get('play_selection', '')).lower()
     
+    # 1. FIX: Add more keywords to catch Props that miss the "Player" prefix
     if "player" in market: return "Player Prop"
+    if any(x in market for x in ["shots", "receptions", "saves", "goals", "assists", "rebounds", "points"]):
+        return "Player Prop"
+        
     if "moneyline" in market: return "Moneyline"
     if "spread" in market or "run line" in market or "puck line" in market or "handicap" in market: return "Spread"
     if "total" in market: return "Total"
@@ -122,7 +126,7 @@ def categorize_bet(row):
 
 def get_bet_side(selection):
     s = str(selection).lower()
-    # REGEX UPDATE: Only match whole words so "Underdog" doesn't trigger "Under"
+    # 2. FIX: Regex matching so "Thu[nder]" doesn't trigger "Under"
     if re.search(r'\bover\b', s): return "Over"
     if re.search(r'\bunder\b', s): return "Under"
     return "Other"
@@ -144,7 +148,7 @@ def extract_prop_category_dashboard(market):
     if "steals" in m: return "Steals"
     if "turnovers" in m: return "Turnovers"
     
-    # NEW CATEGORIES
+    # 3. FIX: Add missing sports categories
     if "receptions" in m: return "Receptions"
     if "shots" in m: return "Shots on Goal"
     if "saves" in m: return "Saves"
@@ -160,7 +164,7 @@ def extract_prop_category_dashboard(market):
     if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
     if "moneyline" in m: return "Moneyline"
     
-    # FALLBACK UPDATE: Return the actual title instead of "Other"
+    # 4. FIX: Return title case instead of "Other" so you see "Power Play Points" etc.
     return m.title()
 
 # --- MAIN UI ---
@@ -191,19 +195,19 @@ else:
         side = row['Bet Side']
         bet_type = row['Bet Type']
 
-        # Spreads & Moneylines should NEVER have a side (Fixes "Under NBA Spread")
+        # 5. FIX: Never show Side for Spread/Moneyline (Fixes "Under NBA Spread")
         if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']:
             return f"{league} {prop}"
 
-        # Totals
+        # If it's a Total Bet -> "Over NBA Game Total"
         if bet_type == 'Total' or prop == 'Total':
             return f"{side} {league} Game Total"
             
-        # Player Props
+        # If it's a Player Prop -> "Over NBA Player Points"
         if bet_type == 'Player Prop':
             return f"{side} {league} Player {prop}"
 
-        # Fallback
+        # Fallbacks
         if side == "Other":
             return f"{league} {prop}"
             
