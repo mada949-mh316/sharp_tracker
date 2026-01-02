@@ -122,12 +122,13 @@ def categorize_bet(row):
 
 def get_bet_side(selection):
     s = str(selection).lower()
-    if "over" in s: return "Over"
-    if "under" in s: return "Under"
+    # REGEX UPDATE: Only match whole words so "Underdog" doesn't trigger "Under"
+    if re.search(r'\bover\b', s): return "Over"
+    if re.search(r'\bunder\b', s): return "Under"
     return "Other"
 
 def extract_prop_category_dashboard(market):
-    m = str(market).lower().replace("player ", "").replace("alternate ", "")
+    m = str(market).lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
     
     # Prop specific
     if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
@@ -139,9 +140,15 @@ def extract_prop_category_dashboard(market):
     if "rebounds" in m: return "Rebounds"
     if "assists" in m: return "Assists"
     if "threes" in m or "3-point" in m or "3pt" in m: return "Threes"
-    if "blocks" in m: return "Blocks"
+    if "blocks" in m or "blocked" in m: return "Blocks"
     if "steals" in m: return "Steals"
     if "turnovers" in m: return "Turnovers"
+    
+    # NEW CATEGORIES
+    if "receptions" in m: return "Receptions"
+    if "shots" in m: return "Shots on Goal"
+    if "saves" in m: return "Saves"
+    if "goals" in m: return "Goals"
     
     if "passing" in m: return "Passing"
     if "rushing" in m: return "Rushing"
@@ -150,10 +157,11 @@ def extract_prop_category_dashboard(market):
     
     # Generic fallbacks
     if "total" in m: return "Total"
-    if "spread" in m or "handicap" in m: return "Spread"
+    if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
     if "moneyline" in m: return "Moneyline"
     
-    return "Other"
+    # FALLBACK UPDATE: Return the actual title instead of "Other"
+    return m.title()
 
 # --- MAIN UI ---
 st.title("💸 Smart Money Tracker")
@@ -183,15 +191,19 @@ else:
         side = row['Bet Side']
         bet_type = row['Bet Type']
 
-        # 1. If it's a Total Bet -> "Over NBA Game Total"
-        if bet_type == 'Total':
+        # Spreads & Moneylines should NEVER have a side (Fixes "Under NBA Spread")
+        if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']:
+            return f"{league} {prop}"
+
+        # Totals
+        if bet_type == 'Total' or prop == 'Total':
             return f"{side} {league} Game Total"
             
-        # 2. If it's a Player Prop -> "Over NBA Player Points"
+        # Player Props
         if bet_type == 'Player Prop':
             return f"{side} {league} Player {prop}"
 
-        # 3. Fallbacks (Moneyline/Spread)
+        # Fallback
         if side == "Other":
             return f"{league} {prop}"
             
@@ -352,7 +364,7 @@ else:
 
     with tab_view:
         st.subheader("Bet History")
-        target_cols = ['timestamp', 'league', 'matchup', 'market', 'Bet Type', 'Bet Side', sel_col, 'play_odds', 'Arb %', book_col, sharp_col, 'liquidity', 'status', 'profit']
+        target_cols = ['timestamp', 'league', 'matchup', 'market', 'Combo Category', 'Bet Type', 'Bet Side', sel_col, 'play_odds', 'Arb %', book_col, sharp_col, 'liquidity', 'status', 'profit']
         final_cols = [c for c in target_cols if c in df_filtered.columns]
         display_df = df_filtered[final_cols].copy()
         if 'timestamp' in display_df.columns:
