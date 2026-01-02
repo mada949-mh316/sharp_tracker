@@ -11,14 +11,14 @@ from streamlit_gsheets import GSheetsConnection
 CSV_PATH = "data/bets.csv"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
-st.set_page_config(page_title="Smart Money Tracker", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v2.2", layout="wide")
 
 # --- DATA LOADING ---
 def load_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
-        # ttl=10 ensures cache clears quickly
-        df = conn.read(ttl=10)
+        # ttl=0 forces fresh data reload
+        df = conn.read(ttl=0)
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
@@ -26,7 +26,7 @@ def load_data():
         st.error(f"Error reading Google Sheet: {e}")
         return pd.DataFrame()
 
-# --- HELPER: ROBUST ODDS PARSING ---
+# --- HELPER: ODDS PARSING ---
 def parse_odds_val(val):
     if pd.isna(val): return 0.0
     s = str(val).lower().replace('−', '-') 
@@ -47,16 +47,13 @@ def calculate_arb_percent(row):
     play = parse_odds_val(row.get('play_odds', 0))
     sharp = parse_odds_val(row.get('sharp_odds', 0))
     if play == 0 or sharp == 0: return 0.0
-    
     dec_play = get_decimal_odds(play)
     dec_sharp = get_decimal_odds(sharp)
     if dec_play == 0 or dec_sharp == 0: return 0.0
-
     imp_play = 1 / dec_play
     imp_sharp = 1 / dec_sharp
     total_imp = imp_play + imp_sharp
     if total_imp == 0: return 0.0
-    
     return ((1 / total_imp) - 1) * 100
 
 # --- HELPER: FADE PROFIT ---
@@ -64,12 +61,9 @@ def calculate_fade_profit(row):
     original_result = row.get('result', 'Pending')
     if original_result not in ['Won', 'Lost']: return 0.0
     fade_result = 'Lost' if original_result == 'Won' else 'Won'
-    
     if fade_result == 'Lost': return -UNIT_SIZE
-    
     original_odds = parse_odds_val(row.get('play_odds', 100))
     if original_odds == 0: return 0.0
-    
     fade_odds = original_odds * -1
     if fade_odds > 0: return UNIT_SIZE * (fade_odds / 100.0)
     else: return UNIT_SIZE * (100.0 / abs(fade_odds))
@@ -93,10 +87,13 @@ def categorize_bet(row):
     market = str(row.get('market', '')).lower()
     selection = str(row.get('play_selection', '')).lower()
     
-    # Prop Keywords
     if "player" in market: return "Player Prop"
-    if any(x in market for x in ["shots", "sog", "receptions", "saves", "goals", "assists", "rebounds", "points", "hits"]):
+    if any(x in market for x in ["shots", "sog", "receptions", "saves", "goals", "assists", "rebounds", "hits"]):
         return "Player Prop"
+    
+    # SPECIAL CHECK: If market is just "Points" (no player), treat as Total
+    if market == "points" and "player" not in market:
+        return "Total"
         
     if "moneyline" in market: return "Moneyline"
     if "spread" in market or "run line" in market or "puck line" in market or "handicap" in market: return "Spread"
@@ -106,54 +103,69 @@ def categorize_bet(row):
 
 def get_bet_side(selection):
     s = str(selection).lower()
-    # REGEX: Matches "Under" only as a whole word (Fixes "Underdog")
     if re.search(r'\bover\b', s): return "Over"
     if re.search(r'\bunder\b', s): return "Under"
     return "Other"
 
-def extract_prop_category_dashboard(market):
-    m = str(market).lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
+# --- UPDATED: PROP EXTRACTION WITH LEAGUE AWARENESS ---
+def extract_prop_category_dashboard(row):
+    market = str(row.get('market', ''))
+    league = str(row.get('league', ''))
+    m = market.lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
     
-    # 1. BASKETBALL / GENERIC
+    # 1. TOTALS PRIORITY
+    if "total" in m: return "Total"
+    
+    # 2. POINTS LOGIC (The Fix)
+    if "points" in m:
+        # If it's a combined prop (PRA, P+R, etc), keep it as is
+        if "rebounds" in m or "assists" in m: 
+            pass # Let it fall through to specific checks
+        else:
+            # It is JUST points.
+            # If it explicitly says "Player", it's a Prop (NBA/NFL Player Points)
+            if "player" in market.lower(): return "Points"
+            # If it's NHL, it's a Prop
+            if league == "NHL": return "Points"
+            # Otherwise (NCAAF Points, NBA Team Points), it's a Total
+            return "Total"
+
+    # 3. BASKETBALL / GENERIC
     if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
     if "points" in m and "rebounds" in m: return "Pts + Reb"
     if "points" in m and "assists" in m: return "Pts + Ast"
     if "rebounds" in m and "assists" in m: return "Reb + Ast"
     
-    if "points" in m: return "Points"
+    if "points" in m: return "Points" # Should be caught above, but safety net
     if "rebounds" in m: return "Rebounds"
     if "assists" in m: return "Assists"
     if "threes" in m or "3-point" in m or "3pt" in m: return "Threes"
-    if "blocks" in m or "blocked" in m: return "Blocks"
+    if "blocks" in m: return "Blocks"
     if "steals" in m: return "Steals"
     if "turnovers" in m: return "Turnovers"
     
-    # 2. NHL / SOCCER EXPANDED
+    # 4. NHL / SOCCER
     if "shots" in m or "sog" in m: return "Shots on Goal"
     if "saves" in m: return "Saves"
     if "goals" in m or "score" in m: return "Goals"
     if "hits" in m: return "Hits"
     if "faceoff" in m: return "Faceoffs"
-    if "shutout" in m: return "Shutout"
-    if "time on ice" in m or "toi" in m: return "Time On Ice"
     
-    # 3. NFL
+    # 5. NFL
     if "receptions" in m: return "Receptions"
     if "passing" in m: return "Passing"
     if "rushing" in m: return "Rushing"
     if "receiving" in m: return "Receiving"
     if "touchdown" in m: return "Touchdowns"
     
-    # 4. LINES
-    if "total" in m: return "Total"
+    # 6. LINES
     if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
     if "moneyline" in m: return "Moneyline"
     
-    # 5. FALLBACK: Title Case (Eliminates "Other")
     return m.title()
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker")
+st.title("💸 Smart Money Tracker v2.2")
 df = load_data()
 
 if df.empty:
@@ -170,7 +182,8 @@ else:
     # --- APPLY CLASSIFICATIONS ---
     df['Bet Type'] = df.apply(categorize_bet, axis=1)
     df['Bet Side'] = df[sel_col].apply(get_bet_side)
-    df['Prop Type'] = df['market'].apply(extract_prop_category_dashboard)
+    # Changed to use axis=1 so we can access 'league' and 'market' together
+    df['Prop Type'] = df.apply(extract_prop_category_dashboard, axis=1)
     
     def create_combo_category(row):
         league = str(row.get('league', 'Unknown'))
@@ -178,19 +191,15 @@ else:
         side = row['Bet Side']
         bet_type = row['Bet Type']
 
-        # SPREAD/ML: Never show side
         if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']:
             return f"{league} {prop}"
 
-        # TOTALS
         if bet_type == 'Total' or prop == 'Total':
             return f"{side} {league} Game Total"
             
-        # PROPS
         if bet_type == 'Player Prop':
             return f"{side} {league} Player {prop}"
 
-        # FALLBACK
         if side == "Other":
             return f"{league} {prop}"
             
@@ -198,10 +207,9 @@ else:
 
     df['Combo Category'] = df.apply(create_combo_category, axis=1)
 
-    # 2. CALCULATE METRICS
+    # METRICS
     if 'sharp_odds' in df.columns and 'play_odds' in df.columns:
         df['Arb %'] = df.apply(calculate_arb_percent, axis=1)
-        
         def get_arb_bucket(val):
             if val == 0: return "None"
             if val < 0: return "Negative (No Arb)"
@@ -227,8 +235,6 @@ else:
         metric_title = "ROI"
 
     st.sidebar.markdown("---")
-    
-    # Date Filter
     date_range = []
     if 'timestamp' in df.columns and not df.empty:
         min_date = df['timestamp'].min().date()
@@ -236,28 +242,22 @@ else:
         date_range = st.sidebar.date_input("Select Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
     st.sidebar.markdown("---")
-    
-    # Fade Mode
     fade_mode = st.sidebar.toggle("🔄 FADE MODE", value=False)
     if fade_mode:
         st.sidebar.warning("⚠️ VIEWING OPPOSITE RESULTS")
         df['profit'] = df.apply(calculate_fade_profit, axis=1)
     
     st.sidebar.markdown("---")
-    
-    # Odds Filter
     col_min, col_max = st.sidebar.columns(2)
     min_odds_input = col_min.text_input("Min Odds", value="", placeholder="-150")
     max_odds_input = col_max.text_input("Max Odds", value="", placeholder="+150")
 
     st.sidebar.markdown("---")
-
-    # Liquidity Filter
     col_liq_min, col_liq_max = st.sidebar.columns(2)
     min_liq_input = col_liq_min.text_input("Min Liq ($)", value="", placeholder="1000")
     max_liq_input = col_liq_max.text_input("Max Liq ($)", value="", placeholder="50000")
 
-    # --- APPLY FILTERS ---
+    # --- FILTERING ---
     df_filtered = df.copy()
     if 'timestamp' in df_filtered.columns and len(date_range) == 2:
         df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
@@ -295,7 +295,7 @@ else:
                 try: df_filtered = df_filtered[df_filtered['liq_clean'] <= float(max_liq_input)]
                 except: pass
 
-    # --- METRICS ---
+    # --- METRICS UI ---
     closed_bets = df_filtered[df_filtered['status'] != "Open"].copy()
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Bets", len(df_filtered))
@@ -312,8 +312,6 @@ else:
         col4.metric("ROI", "0.0%")
 
     st.markdown("---")
-
-    # --- TABS ---
     tab_view, tab_analysis, tab_leaderboard = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard"])
 
     with tab_view:
@@ -334,7 +332,7 @@ else:
                 heatmap_data = closed_bets.groupby(['league', 'market'])['profit'].agg(agg_func).reset_index()
                 fig_heat = px.density_heatmap(
                     heatmap_data, x="market", y="league", z="profit", text_auto=text_fmt,
-                    color_continuous_scale="RdYlGn", range_color=[-500, 500]
+                    color_continuous_scale="RdYlGn", range_color=[-500 if agg_func=='sum' else -50, 500 if agg_func=='sum' else 50]
                 )
                 st.plotly_chart(fig_heat, use_container_width=True)
 
@@ -349,7 +347,6 @@ else:
                 st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
 
             if sharp_col in closed_bets.columns:
-                st.markdown("---")
                 st.subheader("Sharp Source Analysis")
                 sharp_data = closed_bets.copy().dropna(subset=[sharp_col])
                 sharp_exploded = sharp_data.assign(sharp_split=sharp_data[sharp_col].astype(str).str.split(', ')).explode('sharp_split')
@@ -379,6 +376,6 @@ else:
 
     # --- DEBUG SECTION ---
     with st.expander("🛠️ Debug: Uncategorized Markets"):
-        st.write("Below are markets that might be missing keywords:")
+        st.write("If you see 'Other', it means the update didn't work. Check below:")
         debug_df = df[['market', 'Prop Type', 'Combo Category']].drop_duplicates().sort_values('market')
         st.dataframe(debug_df, use_container_width=True)
