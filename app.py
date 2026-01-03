@@ -91,7 +91,6 @@ def categorize_bet(row):
     if any(x in market for x in ["shots", "sog", "receptions", "saves", "goals", "assists", "rebounds", "hits"]):
         return "Player Prop"
     
-    # SPECIAL CHECK: If market is just "Points" (no player), treat as Total
     if market == "points" and "player" not in market:
         return "Total"
         
@@ -107,36 +106,27 @@ def get_bet_side(selection):
     if re.search(r'\bunder\b', s): return "Under"
     return "Other"
 
-# --- UPDATED: PROP EXTRACTION WITH LEAGUE AWARENESS ---
 def extract_prop_category_dashboard(row):
     market = str(row.get('market', ''))
     league = str(row.get('league', ''))
     m = market.lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
     
-    # 1. TOTALS PRIORITY
     if "total" in m: return "Total"
     
-    # 2. POINTS LOGIC (The Fix)
     if "points" in m:
-        # If it's a combined prop (PRA, P+R, etc), keep it as is
         if "rebounds" in m or "assists" in m: 
-            pass # Let it fall through to specific checks
+            pass 
         else:
-            # It is JUST points.
-            # If it explicitly says "Player", it's a Prop (NBA/NFL Player Points)
             if "player" in market.lower(): return "Points"
-            # If it's NHL, it's a Prop
             if league == "NHL": return "Points"
-            # Otherwise (NCAAF Points, NBA Team Points), it's a Total
             return "Total"
 
-    # 3. BASKETBALL / GENERIC
     if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
     if "points" in m and "rebounds" in m: return "Pts + Reb"
     if "points" in m and "assists" in m: return "Pts + Ast"
     if "rebounds" in m and "assists" in m: return "Reb + Ast"
     
-    if "points" in m: return "Points" # Should be caught above, but safety net
+    if "points" in m: return "Points"
     if "rebounds" in m: return "Rebounds"
     if "assists" in m: return "Assists"
     if "threes" in m or "3-point" in m or "3pt" in m: return "Threes"
@@ -144,21 +134,18 @@ def extract_prop_category_dashboard(row):
     if "steals" in m: return "Steals"
     if "turnovers" in m: return "Turnovers"
     
-    # 4. NHL / SOCCER
     if "shots" in m or "sog" in m: return "Shots on Goal"
     if "saves" in m: return "Saves"
     if "goals" in m or "score" in m: return "Goals"
     if "hits" in m: return "Hits"
     if "faceoff" in m: return "Faceoffs"
     
-    # 5. NFL
     if "receptions" in m: return "Receptions"
     if "passing" in m: return "Passing"
     if "rushing" in m: return "Rushing"
     if "receiving" in m: return "Receiving"
     if "touchdown" in m: return "Touchdowns"
     
-    # 6. LINES
     if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
     if "moneyline" in m: return "Moneyline"
     
@@ -179,10 +166,8 @@ else:
     if book_col:
         df = df[~df[book_col].isin(DFS_BOOKS)]
         
-    # --- APPLY CLASSIFICATIONS ---
     df['Bet Type'] = df.apply(categorize_bet, axis=1)
     df['Bet Side'] = df[sel_col].apply(get_bet_side)
-    # Changed to use axis=1 so we can access 'league' and 'market' together
     df['Prop Type'] = df.apply(extract_prop_category_dashboard, axis=1)
     
     def create_combo_category(row):
@@ -193,21 +178,16 @@ else:
 
         if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']:
             return f"{league} {prop}"
-
         if bet_type == 'Total' or prop == 'Total':
             return f"{side} {league} Game Total"
-            
         if bet_type == 'Player Prop':
             return f"{side} {league} Player {prop}"
-
         if side == "Other":
             return f"{league} {prop}"
-            
         return f"{side} {league} {prop}"
 
     df['Combo Category'] = df.apply(create_combo_category, axis=1)
 
-    # METRICS
     if 'sharp_odds' in df.columns and 'play_odds' in df.columns:
         df['Arb %'] = df.apply(calculate_arb_percent, axis=1)
         def get_arb_bucket(val):
@@ -219,7 +199,7 @@ else:
             return "5%+"
         df['Arb Bucket'] = df['Arb %'].apply(get_arb_bucket)
 
-    # --- SIDEBAR FILTERS ---
+    # --- SIDEBAR ---
     st.sidebar.header("Filters")
     metric_mode = st.sidebar.radio("Show Results As:", ["Total Profit ($)", "ROI (%)"], index=0)
     
@@ -264,10 +244,8 @@ else:
     
     all_leagues = df['league'].unique() if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
-    
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
     selected_types = st.sidebar.multiselect("Filter by Type", options=all_types, default=all_types)
-
     all_sides = ['Over', 'Under', 'Other']
     selected_sides = st.sidebar.multiselect("Filter by Side", options=all_sides, default=all_sides)
 
@@ -346,7 +324,27 @@ else:
                 side_stats = closed_bets.groupby('Bet Side')['profit'].agg(agg_func).reset_index()
                 st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
 
+            st.markdown("---")
+            col_c, col_d = st.columns(2)
+            
+            with col_c:
+                if 'Arb Bucket' in closed_bets.columns:
+                    st.subheader(f"📉 {metric_title} by Arb %")
+                    arb_stats = closed_bets.groupby('Arb Bucket')['profit'].agg(agg_func).reset_index()
+                    sorter = ["Negative (No Arb)", "None", "0% - 1%", "1% - 3%", "3% - 5%", "5%+"]
+                    valid_cats = [x for x in sorter if x in arb_stats['Arb Bucket'].unique()]
+                    arb_stats['Arb Bucket'] = pd.Categorical(arb_stats['Arb Bucket'], categories=sorter, ordered=True)
+                    arb_stats = arb_stats.sort_values('Arb Bucket')
+                    st.plotly_chart(plot_metric_bar(arb_stats, 'Arb Bucket', 'profit', f"Is Higher Arb % Better?", y_label, text_fmt), use_container_width=True)
+
+            with col_d:
+                if book_col:
+                    st.subheader(f"🏦 {metric_title} by Sportsbook")
+                    book_stats = closed_bets.groupby(book_col)['profit'].agg(agg_func).reset_index()
+                    st.plotly_chart(plot_metric_bar(book_stats, book_col, 'profit', f"Best Sportsbooks ({metric_title})", y_label, text_fmt), use_container_width=True)
+
             if sharp_col in closed_bets.columns:
+                st.markdown("---")
                 st.subheader("Sharp Source Analysis")
                 sharp_data = closed_bets.copy().dropna(subset=[sharp_col])
                 sharp_exploded = sharp_data.assign(sharp_split=sharp_data[sharp_col].astype(str).str.split(', ')).explode('sharp_split')
