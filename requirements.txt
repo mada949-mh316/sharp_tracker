@@ -3,3 +3,4 @@ pandas
 plotly
 numpy
 st-gsheets-connection
+oauth2client
