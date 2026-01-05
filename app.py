@@ -188,11 +188,11 @@ def extract_prop_category_dashboard(row):
     return m.title()
 
 # --- MANUAL GRADER UI FUNCTION ---
+# --- MANUAL GRADER UI FUNCTION ---
 def render_manual_grader(df_full):
     st.header("📝 Manual Grader")
     
     # Filter for Open/Pending bets
-    # Check for 'Open' or 'Pending' case insensitive
     if 'status' not in df_full.columns:
         st.error("Status column missing.")
         return
@@ -217,36 +217,35 @@ def render_manual_grader(df_full):
                 st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
             
             # --- ACTION BUTTONS ---
-            # We use index in key to make it unique per row
+            # Helper to save safely
+            def save_and_update(df_to_save):
+                # 1. Create directory if it doesn't exist (FIXES THE ERROR)
+                os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+                # 2. Save local CSV
+                df_to_save.to_csv(CSV_PATH, index=False)
+                # 3. Sync to cloud
+                sync_to_google_sheets(df_to_save)
+                st.rerun()
+
             if c2.button("✅ Won", key=f"won_{index}"):
                 profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
                 df_full.at[index, 'status'] = "Won"
                 df_full.at[index, 'result'] = "Won"
                 df_full.at[index, 'profit'] = round(profit, 2)
-                
-                # Save locally and Sync
-                df_full.to_csv(CSV_PATH, index=False)
-                sync_to_google_sheets(df_full)
-                st.rerun()
+                save_and_update(df_full)
 
             if c3.button("❌ Lost", key=f"lost_{index}"):
                 profit = calculate_manual_profit(row.get('play_odds', 0), "Lost")
                 df_full.at[index, 'status'] = "Lost"
                 df_full.at[index, 'result'] = "Lost"
                 df_full.at[index, 'profit'] = round(profit, 2)
-                
-                df_full.to_csv(CSV_PATH, index=False)
-                sync_to_google_sheets(df_full)
-                st.rerun()
+                save_and_update(df_full)
 
             if c4.button("➖ Push", key=f"push_{index}"):
                 df_full.at[index, 'status'] = "Push"
                 df_full.at[index, 'result'] = "Push"
                 df_full.at[index, 'profit'] = 0.0
-                
-                df_full.to_csv(CSV_PATH, index=False)
-                sync_to_google_sheets(df_full)
-                st.rerun()
+                save_and_update(df_full)
             
             st.divider()
 
