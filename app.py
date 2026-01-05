@@ -6,11 +6,17 @@ import numpy as np
 import re
 from datetime import datetime, date
 from streamlit_gsheets import GSheetsConnection
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from gspread_dataframe import set_with_dataframe
 
 # --- CONFIGURATION ---
 CSV_PATH = "data/bets.csv"
+SHEET_NAME = "Smart Money Bets"
+CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
+
 st.set_page_config(page_title="Smart Money Tracker v2.2", layout="wide")
 
 # --- DATA LOADING ---
@@ -25,6 +31,36 @@ def load_data():
     except Exception as e:
         st.error(f"Error reading Google Sheet: {e}")
         return pd.DataFrame()
+
+# --- HELPER: SYNC TO GOOGLE SHEETS (WRITE) ---
+def sync_to_google_sheets(df):
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
+        client = gspread.authorize(creds)
+        sheet = client.open(SHEET_NAME).sheet1
+        sheet.clear()
+        set_with_dataframe(sheet, df)
+        st.toast("☁️ Synced to Google Sheets!", icon="✅")
+    except Exception as e:
+        st.error(f"Sync Failed: {e}")
+
+# --- HELPER: MANUAL PROFIT CALCULATION ---
+def calculate_manual_profit(odds, result):
+    # Ensure odds is a number
+    try:
+        odds = float(odds)
+    except:
+        return 0.0
+
+    if result == "Won":
+        if odds > 0:
+            return UNIT_SIZE * (odds / 100.0)
+        else:
+            return UNIT_SIZE * (100.0 / abs(odds))
+    elif result == "Lost":
+        return -float(UNIT_SIZE)
+    return 0.0  # Push
 
 # --- HELPER: ODDS PARSING ---
 def parse_odds_val(val):
@@ -151,6 +187,69 @@ def extract_prop_category_dashboard(row):
     
     return m.title()
 
+# --- MANUAL GRADER UI FUNCTION ---
+def render_manual_grader(df_full):
+    st.header("📝 Manual Grader")
+    
+    # Filter for Open/Pending bets
+    # Check for 'Open' or 'Pending' case insensitive
+    if 'status' not in df_full.columns:
+        st.error("Status column missing.")
+        return
+
+    open_mask = df_full['status'].str.lower().isin(['open', 'pending'])
+    open_bets = df_full[open_mask].copy()
+    
+    if open_bets.empty:
+        st.info("No open bets to grade! Great job.")
+        return
+
+    st.write(f"Found {len(open_bets)} open bets.")
+
+    # Iterate through open bets
+    for index, row in open_bets.iterrows():
+        with st.container():
+            # Layout: Info | Won | Lost | Push
+            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+            
+            with c1:
+                st.markdown(f"**{row.get('matchup', 'Unknown')}**")
+                st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
+            
+            # --- ACTION BUTTONS ---
+            # We use index in key to make it unique per row
+            if c2.button("✅ Won", key=f"won_{index}"):
+                profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
+                df_full.at[index, 'status'] = "Won"
+                df_full.at[index, 'result'] = "Won"
+                df_full.at[index, 'profit'] = round(profit, 2)
+                
+                # Save locally and Sync
+                df_full.to_csv(CSV_PATH, index=False)
+                sync_to_google_sheets(df_full)
+                st.rerun()
+
+            if c3.button("❌ Lost", key=f"lost_{index}"):
+                profit = calculate_manual_profit(row.get('play_odds', 0), "Lost")
+                df_full.at[index, 'status'] = "Lost"
+                df_full.at[index, 'result'] = "Lost"
+                df_full.at[index, 'profit'] = round(profit, 2)
+                
+                df_full.to_csv(CSV_PATH, index=False)
+                sync_to_google_sheets(df_full)
+                st.rerun()
+
+            if c4.button("➖ Push", key=f"push_{index}"):
+                df_full.at[index, 'status'] = "Push"
+                df_full.at[index, 'result'] = "Push"
+                df_full.at[index, 'profit'] = 0.0
+                
+                df_full.to_csv(CSV_PATH, index=False)
+                sync_to_google_sheets(df_full)
+                st.rerun()
+            
+            st.divider()
+
 # --- MAIN UI ---
 st.title("💸 Smart Money Tracker v2.2")
 df = load_data()
@@ -247,7 +346,7 @@ else:
     all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
     
-    # --- NEW: BOOK FILTER ---
+    # --- BOOK FILTER ---
     all_books = sorted(df[book_col].unique()) if book_col in df.columns else []
     selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
     # -----------------------
@@ -261,7 +360,7 @@ else:
     if 'league' in df.columns and selected_leagues:
         df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
     
-    # --- NEW: APPLYING BOOK FILTER ---
+    # --- APPLYING BOOK FILTER ---
     if book_col in df.columns and selected_books:
         df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
     # --------------------------------
@@ -289,10 +388,14 @@ else:
                 except: pass
 
     # --- METRICS UI ---
-    closed_bets = df_filtered[df_filtered['status'] != "Open"].copy()
+    # Case insensitive check for Open/Pending
+    status_col = df_filtered['status'].str.lower()
+    closed_bets = df_filtered[~status_col.isin(['open', 'pending'])].copy()
+    pending_count = len(df_filtered[status_col.isin(['open', 'pending'])])
+    
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Bets", len(df_filtered))
-    col2.metric("Pending", len(df_filtered[df_filtered['status'] == "Open"]))
+    col2.metric("Pending", pending_count)
     
     if not closed_bets.empty and 'profit' in cols:
         total_profit = closed_bets['profit'].sum()
@@ -305,7 +408,8 @@ else:
         col4.metric("ROI", "0.0%")
 
     st.markdown("---")
-    tab_view, tab_analysis, tab_leaderboard = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard"])
+    # --- UPDATED TABS: ADDED MANUAL GRADER ---
+    tab_view, tab_analysis, tab_leaderboard, tab_grader = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard", "📝 Manual Grader"])
 
     with tab_view:
         st.subheader("Bet History")
@@ -386,6 +490,11 @@ else:
             display_lb['ROI'] = display_lb['ROI'].map('{:.1f}%'.format)
             display_lb['Total_Profit'] = display_lb['Total_Profit'].map('${:,.2f}'.format)
             st.dataframe(display_lb, use_container_width=True, height=600)
+    
+    # --- NEW GRADER TAB ---
+    with tab_grader:
+        # Pass the FULL df, not the filtered one, to ensure we can grade anything currently open
+        render_manual_grader(df)
 
     # --- DEBUG SECTION ---
     with st.expander("🛠️ Debug: Uncategorized Markets"):
