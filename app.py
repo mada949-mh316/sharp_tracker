@@ -163,6 +163,7 @@ else:
     book_col = 'play_book' if 'play_book' in cols else 'sportsbook'
     sharp_col = 'sharp_book' if 'sharp_book' in cols else 'sharp_source'
     
+    # 1. REMOVE DFS BOOKS FIRST
     if book_col:
         df = df[~df[book_col].isin(DFS_BOOKS)]
         
@@ -242,15 +243,29 @@ else:
     if 'timestamp' in df_filtered.columns and len(date_range) == 2:
         df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
     
-    all_leagues = df['league'].unique() if 'league' in df.columns else []
+    # 2. DEFINING FILTERS
+    all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
+    
+    # --- NEW: BOOK FILTER ---
+    all_books = sorted(df[book_col].unique()) if book_col in df.columns else []
+    selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
+    # -----------------------
+
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
     selected_types = st.sidebar.multiselect("Filter by Type", options=all_types, default=all_types)
     all_sides = ['Over', 'Under', 'Other']
     selected_sides = st.sidebar.multiselect("Filter by Side", options=all_sides, default=all_sides)
 
+    # 3. APPLYING FILTERS
     if 'league' in df.columns and selected_leagues:
         df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
+    
+    # --- NEW: APPLYING BOOK FILTER ---
+    if book_col in df.columns and selected_books:
+        df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
+    # --------------------------------
+
     if selected_types:
         df_filtered = df_filtered[df_filtered['Bet Type'].isin(selected_types)]
     if selected_sides:
