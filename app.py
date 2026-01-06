@@ -22,6 +22,17 @@ st.set_page_config(page_title="Smart Money Tracker v3.0", layout="wide")
 
 # --- DATA LOADING ---
 def load_data():
+    # 1. Try Local CSV first (Instant updates, no lag)
+    if os.path.exists(CSV_PATH):
+        try:
+            df = pd.read_csv(CSV_PATH)
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            return df
+        except Exception:
+            pass # If CSV fails, fall back to GSheets
+
+    # 2. Fallback to GSheets (Slower, potential latency)
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
         # ttl=0 forces fresh data reload
@@ -30,7 +41,7 @@ def load_data():
             df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
     except Exception as e:
-        st.error(f"Error reading Google Sheet: {e}")
+        st.error(f"Error reading data: {e}")
         return pd.DataFrame()
 
 # --- HELPER: SYNC TO GOOGLE SHEETS ---
