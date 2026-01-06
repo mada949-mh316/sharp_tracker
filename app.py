@@ -1,39 +1,58 @@
-import streamlit as st
 import pandas as pd
-import plotly.express as px
-import os
-import numpy as np
-import re
-from datetime import datetime, date
-from streamlit_gsheets import GSheetsConnection
+import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
+from datetime import datetime, timedelta
+from fuzzywuzzy import process, fuzz
 
 # --- CONFIGURATION ---
 CSV_PATH = "data/bets.csv"
 SHEET_NAME = "Smart Money Bets"
 CREDS_FILE = "creds.json"
-UNIT_SIZE = 100
-DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
+MAX_LOOKAHEAD_DAYS = 5
+DEBUG_MODE = True
 
-st.set_page_config(page_title="Smart Money Tracker v2.2", layout="wide")
+# 🔑 RAPIDAPI KEY (Get free key from https://rapidapi.com/jjrm365-kIFr3Nx_odV/api/tennis-api-atp-wta-itf)
+# REPLACE THIS WITH YOUR ACTUAL KEY
+RAPID_API_KEY = "1bf7a5d882msh85ac03ceafed66bp1ee0f6jsn724aa12348d2" 
 
-# --- DATA LOADING ---
-def load_data():
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    try:
-        # ttl=0 forces fresh data reload
-        df = conn.read(ttl=0)
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-        return df
-    except Exception as e:
-        st.error(f"Error reading Google Sheet: {e}")
-        return pd.DataFrame()
+# API MAP
+LEAGUE_MAP = {
+    "NBA":   {"sport": "basketball", "league": "nba", "group": None},
+    "NFL":   {"sport": "football", "league": "nfl", "group": None},
+    "NHL":   {"sport": "hockey", "league": "nhl", "group": None},
+    "NCAAF": {"sport": "football", "league": "college-football", "group": "80"},
+    "NCAAB": {"sport": "basketball", "league": "mens-college-basketball", "group": "50"},
+    "Tennis": {"sport": "tennis", "league": "atp", "group": None},
+}
 
-# --- HELPER: SYNC TO GOOGLE SHEETS (WRITE) ---
-def sync_to_google_sheets(df):
+# STATS TRANSLATION
+STAT_MAP = {
+    "Points": ["pts", "points", "score"],
+    "Rebounds": ["reb", "rebounds", "totalrebounds"],
+    "Assists": ["ast", "assists"],
+    "Threes Made": ["3pt", "threepointfieldgoalsmade", "3pm", "3ptm"],
+    "Blocks": ["blk", "blocks"],
+    "Steals": ["stl", "steals"],
+    "Turnovers": ["to", "turnovers"],
+    "Passing Yards": ["passingyards", "yds"],
+    "Rushing Yards": ["rushingyards", "yds"],
+    "Receiving Yards": ["receivingyards", "yds"],
+    "Passing Touchdowns": ["passingtouchdowns", "td"],
+    "Rushing Touchdowns": ["rushingtouchdowns", "td"],
+    "Receiving Touchdowns": ["receivingtouchdowns", "td"],
+    "Receptions": ["receptions", "rec"],
+    "Passing Completions": ["completions", "completedpasses"],
+    "Goals": ["goals", "g"],
+    "Saves": ["saves"],
+    "Shots": ["shots", "sog", "shotsongoal"],
+    "Blocked Shots": ["blockedshots", "blk"]
+}
+
+# --- GOOGLE SHEETS SYNC ---
+def batch_sync_to_cloud(df):
+    print(f"☁️ Syncing to '{SHEET_NAME}'...")
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
@@ -41,462 +60,391 @@ def sync_to_google_sheets(df):
         sheet = client.open(SHEET_NAME).sheet1
         sheet.clear()
         set_with_dataframe(sheet, df)
-        st.toast("☁️ Synced to Google Sheets!", icon="✅")
+        print(f"✅ Success! Uploaded {len(df)} rows.")
     except Exception as e:
-        st.error(f"Sync Failed: {e}")
+        print(f"⚠️ Sync Error: {e}")
 
-# --- HELPER: MANUAL PROFIT CALCULATION ---
-def calculate_manual_profit(odds, result):
-    # Ensure odds is a number
+# --- LOCAL DATABASE ---
+def load_db():
     try:
-        odds = float(odds)
+        return pd.read_csv(CSV_PATH)
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+def save_db(df):
+    df.to_csv(CSV_PATH, index=False)
+    print("💾 Local Database saved.")
+
+# --- HELPER: PARSE TENNIS SCORES ---
+def parse_tennis_score_string(score_str):
+    """
+    Parses '6-4, 3-6, 7-6(4)' into game/set counts
+    Returns: (p1_sets, p2_sets, p1_games, p2_games)
+    """
+    p1_sets, p2_sets = 0, 0
+    p1_games, p2_games = 0, 0
+    
+    # Remove things like "RET" (Retired) or spaces
+    clean_score = score_str.replace("RET", "").strip()
+    sets = clean_score.split(',')
+    
+    for s in sets:
+        s = s.strip()
+        if not s: continue
+        # Remove tiebreak info like (4)
+        if '(' in s: s = s.split('(')[0]
+        
+        try:
+            parts = s.split('-')
+            if len(parts) == 2:
+                g1 = int(parts[0])
+                g2 = int(parts[1])
+                p1_games += g1
+                p2_games += g2
+                if g1 > g2: p1_sets += 1
+                elif g2 > g1: p2_sets += 1
+        except:
+            pass # Skip weird formatting
+            
+    return p1_sets, p2_sets, p1_games, p2_games
+
+# --- API 1: RAPIDAPI (BACKUP FOR TENNIS) ---
+def check_rapidapi_backup(matchup, bet_timestamp):
+    if not RAPID_API_KEY or "YOUR_KEY" in RAPID_API_KEY:
+        print("   [BACKUP] Skipped (No API Key)")
+        return None
+        
+    print(f"   🌍 Checking RapidAPI (Matchstat) for: {matchup}...")
+    
+    # Extract names
+    names = matchup.replace(" vs ", "|").replace(" @ ", "|").split("|")
+    if len(names) < 2: return None
+    p1_name = names[0].strip()
+    p2_name = names[1].strip()
+    
+    url = f"https://tennis-api-atp-wta-itf.p.rapidapi.com/api/v1/h2h/{p1_name}/{p2_name}"
+    headers = {
+        "X-RapidAPI-Key": RAPID_API_KEY,
+        "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        
+        if 'matches' in data:
+            # Sort by date, newest first
+            # Format usually: "2025-01-02T00:00:00"
+            matches = data['matches']
+            
+            # Find the match closest to our bet date
+            bet_date = pd.to_datetime(bet_timestamp).date()
+            
+            for m in matches:
+                m_date_str = m.get('date', '').split('T')[0]
+                m_date = datetime.strptime(m_date_str, "%Y-%m-%d").date()
+                
+                # Check if match is within 2 days of bet (Timezones can be wild)
+                delta = abs((m_date - bet_date).days)
+                
+                if delta <= 2:
+                    # FOUND IT!
+                    result_str = m.get('result', '') # e.g. "6-4, 6-2"
+                    s1, s2, g1, g2 = parse_tennis_score_string(result_str)
+                    
+                    print(f"   ✅ Found in RapidAPI: {result_str}")
+                    
+                    return {
+                        "id": f"rapid_{m.get('id')}",
+                        "date": m_date_str,
+                        "home": {"name": p1_name, "score": s1, "games": g1},
+                        "away": {"name": p2_name, "score": s2, "games": g2}
+                    }
+    except Exception as e:
+        print(f"   [BACKUP ERROR] {e}")
+        
+    return None
+
+# --- API 2: ESPN (PRIMARY) ---
+def get_scoreboard(league_key, date_str):
+    if league_key == "Tennis":
+        events = []
+        for l in ['atp', 'wta']:
+            url = f"http://site.api.espn.com/apis/site/v2/sports/tennis/{l}/scoreboard"
+            try:
+                resp = requests.get(url, params={'dates': date_str, 'limit': 1000})
+                if resp.status_code == 200:
+                    events.extend(resp.json().get('events', []))
+            except: pass
+        return events
+
+    info = LEAGUE_MAP.get(league_key)
+    if not info: return []
+    sport = info['sport']
+    if league_key == 'NHL': sport = 'hockey'
+    
+    url = f"http://site.api.espn.com/apis/site/v2/sports/{sport}/{info['league']}/scoreboard"
+    params = {'dates': date_str, 'limit': 1000}
+    if info['group']: params['groups'] = info['group']
+    try:
+        return requests.get(url, params=params).json().get('events', [])
     except:
-        return 0.0
+        return []
 
+def get_game_summary(league_key, game_id):
+    info = LEAGUE_MAP.get(league_key)
+    if league_key == 'Tennis':
+        url = f"http://site.api.espn.com/apis/site/v2/sports/tennis/atp/summary" 
+    else:
+        if not info: return None
+        sport = info['sport']
+        if league_key == 'NHL': sport = 'hockey'
+        url = f"http://site.api.espn.com/apis/site/v2/sports/{sport}/{info['league']}/summary"
+        
+    try:
+        return requests.get(url, params={'event': game_id}).json()
+    except:
+        return None
+
+# --- PARSING ---
+def parse_player_stats(summary_json):
+    player_data = {}
+    try:
+        boxscore = summary_json.get('boxscore', {})
+        teams = boxscore.get('players', [])
+        for team in teams:
+            statistics = team.get('statistics', [])
+            for category in statistics:
+                keys = [k.lower() for k in category.get('keys', [])]
+                for athlete_entry in category.get('athletes', []):
+                    athlete = athlete_entry.get('athlete', {})
+                    name = athlete.get('displayName', "Unknown")
+                    stats_list = athlete_entry.get('stats', [])
+                    if name not in player_data: player_data[name] = {}
+                    for i, stat_val in enumerate(stats_list):
+                        if i < len(keys):
+                            try:
+                                s_val = str(stat_val)
+                                if "-" in s_val:
+                                    made = float(s_val.split("-")[0])
+                                    player_data[name][keys[i]] = made
+                                else:
+                                    player_data[name][keys[i]] = float(stat_val)
+                            except: continue
+        return player_data
+    except: return {}
+
+def extract_game_info(event):
+    try:
+        if 'competitions' not in event or not event['competitions']: return None
+        
+        status = event['status']['type']['state']
+        if status not in ['post', 'final']: return None 
+        
+        comp = event['competitions'][0]
+        if 'competitors' not in comp: return None
+        
+        c1_data, c2_data = None, None
+        
+        def parse_competitor(c):
+            linescores = c.get('linescores', [])
+            total_games = 0 
+            score_1h = 0
+            if linescores:
+                score_1h = sum([x.get('value', 0) for x in linescores[:2]])
+                total_games = sum([x.get('value', 0) for x in linescores])
+            
+            return {
+                "name": c['team']['displayName'],
+                "short": c['team'].get('shortDisplayName', ""),
+                "abbr": c['team'].get('abbreviation', ""),
+                "score": int(c['score']),
+                "games": total_games,
+                "score_1h": score_1h
+            }
+
+        for c in comp['competitors']:
+            side = c.get('homeAway', 'unknown')
+            if side == 'home': c1_data = parse_competitor(c)
+            elif side == 'away': c2_data = parse_competitor(c)
+
+        if not c1_data or not c2_data:
+            if len(comp['competitors']) >= 2:
+                c1_data = parse_competitor(comp['competitors'][0])
+                c2_data = parse_competitor(comp['competitors'][1])
+
+        if not c1_data or not c2_data: return None
+
+        return {
+            "id": event['id'],
+            "date": event['date'],
+            "home": c1_data,
+            "away": c2_data
+        }
+    except: return None
+
+# --- GRADING LOGIC ---
+def grade_bet(row, games_cache, boxscore_cache):
+    try:
+        ts = pd.to_datetime(row['timestamp'])
+    except: return None, None
+
+    found_game = None
+
+    # 1. SEARCH ESPN API (Primary)
+    for day_offset in range(MAX_LOOKAHEAD_DAYS + 1):
+        check_date = (ts + timedelta(days=day_offset)).strftime('%Y%m%d')
+        if check_date not in games_cache.get(row['league'], {}):
+            events = get_scoreboard(row['league'], check_date)
+            if row['league'] not in games_cache: games_cache[row['league']] = {}
+            daily = []
+            for e in events:
+                info = extract_game_info(e)
+                if info: daily.append(info)
+            games_cache[row['league']][check_date] = daily
+        
+        daily_games = games_cache[row['league']][check_date]
+        tracker_teams = row['matchup'].replace(" vs ", "|").replace(" @ ", "|").split("|")
+        if len(tracker_teams) < 2: continue
+        t1_raw, t2_raw = tracker_teams[0].strip(), tracker_teams[1].strip()
+
+        for game in daily_games:
+            game_names = [
+                game['home']['name'], game['home']['short'], game['home']['abbr'],
+                game['away']['name'], game['away']['short'], game['away']['abbr']
+            ]
+            t1_found = any(fuzz.partial_ratio(t1_raw.lower(), n.lower()) > 80 for n in game_names)
+            t2_found = any(fuzz.partial_ratio(t2_raw.lower(), n.lower()) > 80 for n in game_names)
+            if t1_found and t2_found:
+                found_game = game
+                break
+        if found_game: break
+    
+    # 2. SEARCH RAPID API (Backup for Tennis)
+    if not found_game and row['league'] == 'Tennis':
+        found_game = check_rapidapi_backup(row['matchup'], ts)
+
+    if not found_game: return None, None
+
+    result = "Pending"
+    
+    try:
+        # PLAYER PROP
+        if "Player" in row['market']:
+            # RapidAPI doesn't support Player Props in this basic script, skipping
+            if "rapid_" in str(found_game['id']):
+                print(f"   ⚠️ RapidAPI found game but cannot grade Player Prop: {row['market']}")
+                return None, None
+
+            game_id = found_game['id']
+            if game_id not in boxscore_cache:
+                summary = get_game_summary(row['league'], game_id)
+                boxscore_cache[game_id] = parse_player_stats(summary)
+            player_stats_db = boxscore_cache[game_id]
+            target_name = row['play_selection'].split(" Over ")[0].split(" Under ")[0].strip()
+            
+            best_match = process.extractOne(target_name, player_stats_db.keys())
+            if not best_match or best_match[1] < 85: return None, None
+            player_name_found = best_match[0]
+            stats = player_stats_db[player_name_found]
+            
+            market_lower = row['market'].lower()
+            market_type = row['market'].replace("Player ", "").strip()
+            actual_val = 0.0
+            
+            def get_stat_val(category):
+                for k in STAT_MAP.get(category, []):
+                    if k in stats: return stats[k]
+                return 0.0
+
+            if "pra" in market_lower:
+                p, r, a = get_stat_val("Points"), get_stat_val("Rebounds"), get_stat_val("Assists")
+                actual_val = p + r + a
+            elif "+" in market_lower:
+                if "points" in market_lower or "pts" in market_lower: actual_val += get_stat_val("Points")
+                if "rebounds" in market_lower or "rebs" in market_lower: actual_val += get_stat_val("Rebounds")
+                if "assists" in market_lower or "ast" in market_lower: actual_val += get_stat_val("Assists")
+            else:
+                actual_val = get_stat_val(market_type)
+
+            line = float(row['play_selection'].split()[-1])
+            if "Over" in row['play_selection']: result = "Won" if actual_val > line else "Lost"
+            elif "Under" in row['play_selection']: result = "Won" if actual_val < line else "Lost"
+            if actual_val == line: result = "Push"
+
+        # TEAM/MATCH LOGIC
+        else:
+            sel = row['play_selection']
+            
+            home_names = [found_game['home']['name']]
+            # Add ESPN short names if available (RapidAPI object structure is simpler)
+            if 'short' in found_game['home']: home_names.append(found_game['home']['short'])
+
+            is_home = any(fuzz.partial_ratio(sel, n) > 80 for n in home_names)
+            
+            use_games = (row['league'] == 'Tennis' and ("Spread" in row['market'] or "Total" in row['market']))
+            
+            if use_games:
+                score_us = found_game['home']['games'] if is_home else found_game['away']['games']
+                score_them = found_game['away']['games'] if is_home else found_game['home']['games']
+            else:
+                score_us = found_game['home']['score'] if is_home else found_game['away']['score']
+                score_them = found_game['away']['score'] if is_home else found_game['home']['score']
+            
+            if "Total" in row['market']:
+                line = float(sel.split()[-1])
+                if row['league'] == 'Tennis':
+                    total = found_game['home']['games'] + found_game['away']['games']
+                else:
+                    total = found_game['home']['score'] + found_game['away']['score']
+                    
+                if "Over" in sel: result = "Won" if total > line else "Lost"
+                elif "Under" in sel: result = "Won" if total < line else "Lost"
+                if total == line: result = "Push"
+
+            elif ("Spread" in row['market'] or "Moneyline" in row['market']):
+                line = float(sel.split()[-1]) if "Spread" in row['market'] else 0.0
+                if score_us + line > score_them: result = "Won"
+                elif score_us + line < score_them: result = "Lost"
+                else: result = "Push"
+
+    except: return None, None
+
+    profit = 0.0
+    unit = 100
     if result == "Won":
-        if odds > 0:
-            return UNIT_SIZE * (odds / 100.0)
-        else:
-            return UNIT_SIZE * (100.0 / abs(odds))
+        odds = int(row['play_odds'])
+        profit = unit * (odds/100) if odds > 0 else unit * (100/abs(odds))
     elif result == "Lost":
-        return -float(UNIT_SIZE)
-    return 0.0  # Push
+        profit = -unit
 
-# --- HELPER: ODDS PARSING ---
-def parse_odds_val(val):
-    if pd.isna(val): return 0.0
-    s = str(val).lower().replace('−', '-') 
-    if 'even' in s: return 100.0
-    match = re.search(r'([-+]?\d+)', s)
-    if match:
-        try: return float(match.group(1))
-        except: return 0.0
-    return 0.0
+    return result, round(profit, 2)
 
-def get_decimal_odds(american_odds):
-    if pd.isna(american_odds) or american_odds == 0: return 0.0
-    if american_odds > 0: return 1 + (american_odds / 100.0)
-    else: return 1 + (100.0 / abs(american_odds))
-
-# --- HELPER: ARBITRAGE CALCULATION ---
-def calculate_arb_percent(row):
-    play = parse_odds_val(row.get('play_odds', 0))
-    sharp = parse_odds_val(row.get('sharp_odds', 0))
-    if play == 0 or sharp == 0: return 0.0
-    dec_play = get_decimal_odds(play)
-    dec_sharp = get_decimal_odds(sharp)
-    if dec_play == 0 or dec_sharp == 0: return 0.0
-    imp_play = 1 / dec_play
-    imp_sharp = 1 / dec_sharp
-    total_imp = imp_play + imp_sharp
-    if total_imp == 0: return 0.0
-    return ((1 / total_imp) - 1) * 100
-
-# --- HELPER: FADE PROFIT ---
-def calculate_fade_profit(row):
-    original_result = row.get('result', 'Pending')
-    if original_result not in ['Won', 'Lost']: return 0.0
-    fade_result = 'Lost' if original_result == 'Won' else 'Won'
-    if fade_result == 'Lost': return -UNIT_SIZE
-    original_odds = parse_odds_val(row.get('play_odds', 100))
-    if original_odds == 0: return 0.0
-    fade_odds = original_odds * -1
-    if fade_odds > 0: return UNIT_SIZE * (fade_odds / 100.0)
-    else: return UNIT_SIZE * (100.0 / abs(fade_odds))
-
-# --- HELPER: PLOTTING ---
-def plot_metric_bar(data, x_col, y_col, title, y_label, text_fmt):
-    if data.empty: return px.bar(title="No Data")
-    data['Outcome'] = data[y_col].apply(lambda x: 'Positive' if x >= 0 else 'Negative')
-    data = data.sort_values(y_col, ascending=False)
-    fig = px.bar(
-        data, x=x_col, y=y_col, color='Outcome',
-        color_discrete_map={'Positive': '#2ECC71', 'Negative': '#E74C3C'},
-        text_auto=text_fmt, title=title
-    )
-    fig.update_layout(showlegend=False, xaxis_title=None, yaxis_title=y_label)
-    fig.add_hline(y=0, line_width=2, line_color="white", opacity=0.5)
-    return fig
-
-# --- HELPER: CLASSIFICATION ---
-def categorize_bet(row):
-    market = str(row.get('market', '')).lower()
-    selection = str(row.get('play_selection', '')).lower()
+# --- MAIN ---
+def main():
+    print("🎓 Grader running (Hybrid: ESPN + RapidAPI Backup)...")
+    df = load_db()
     
-    if "player" in market: return "Player Prop"
-    if any(x in market for x in ["shots", "sog", "receptions", "saves", "goals", "assists", "rebounds", "hits"]):
-        return "Player Prop"
-    
-    if market == "points" and "player" not in market:
-        return "Total"
+    if 'Pending' in df['status'].values:
+        df.loc[df['status'] == 'Pending', 'status'] = 'Open'
         
-    if "moneyline" in market: return "Moneyline"
-    if "spread" in market or "run line" in market or "puck line" in market or "handicap" in market: return "Spread"
-    if "total" in market: return "Total"
-    if "over" in selection or "under" in selection: return "Total"
-    return "Moneyline"
-
-def get_bet_side(selection):
-    s = str(selection).lower()
-    if re.search(r'\bover\b', s): return "Over"
-    if re.search(r'\bunder\b', s): return "Under"
-    return "Other"
-
-def extract_prop_category_dashboard(row):
-    market = str(row.get('market', ''))
-    league = str(row.get('league', ''))
-    m = market.lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
+    open_mask = df['status'] == 'Open'
+    games_cache = {}
+    boxscore_cache = {}
+    graded_count = 0
     
-    if "total" in m: return "Total"
-    
-    if "points" in m:
-        if "rebounds" in m or "assists" in m: 
-            pass 
-        else:
-            if "player" in market.lower(): return "Points"
-            if league == "NHL": return "Points"
-            return "Total"
-
-    if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
-    if "points" in m and "rebounds" in m: return "Pts + Reb"
-    if "points" in m and "assists" in m: return "Pts + Ast"
-    if "rebounds" in m and "assists" in m: return "Reb + Ast"
-    
-    if "points" in m: return "Points"
-    if "rebounds" in m: return "Rebounds"
-    if "assists" in m: return "Assists"
-    if "threes" in m or "3-point" in m or "3pt" in m: return "Threes"
-    if "blocks" in m: return "Blocks"
-    if "steals" in m: return "Steals"
-    if "turnovers" in m: return "Turnovers"
-    
-    if "shots" in m or "sog" in m: return "Shots on Goal"
-    if "saves" in m: return "Saves"
-    if "goals" in m or "score" in m: return "Goals"
-    if "hits" in m: return "Hits"
-    if "faceoff" in m: return "Faceoffs"
-    
-    if "receptions" in m: return "Receptions"
-    if "passing" in m: return "Passing"
-    if "rushing" in m: return "Rushing"
-    if "receiving" in m: return "Receiving"
-    if "touchdown" in m: return "Touchdowns"
-    
-    if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
-    if "moneyline" in m: return "Moneyline"
-    
-    return m.title()
-
-# --- MANUAL GRADER UI FUNCTION ---
-# --- MANUAL GRADER UI FUNCTION ---
-def render_manual_grader(df_full):
-    st.header("📝 Manual Grader")
-    
-    # Filter for Open/Pending bets
-    if 'status' not in df_full.columns:
-        st.error("Status column missing.")
-        return
-
-    open_mask = df_full['status'].str.lower().isin(['open', 'pending'])
-    open_bets = df_full[open_mask].copy()
-    
-    if open_bets.empty:
-        st.info("No open bets to grade! Great job.")
-        return
-
-    st.write(f"Found {len(open_bets)} open bets.")
-
-    # Iterate through open bets
-    for index, row in open_bets.iterrows():
-        with st.container():
-            # Layout: Info | Won | Lost | Push
-            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+    print(f"Checking {open_mask.sum()} open bets...")
+    for index, row in df[open_mask].iterrows():
+        result, profit = grade_bet(row, games_cache, boxscore_cache)
+        if result and result != "Pending":
+            print(f"✅ {row['play_selection']}: {result} (${profit})")
+            df.at[index, 'status'] = result
+            df.at[index, 'profit'] = profit
+            df.at[index, 'result'] = result
+            graded_count += 1
             
-            with c1:
-                st.markdown(f"**{row.get('matchup', 'Unknown')}**")
-                st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
-            
-            # --- ACTION BUTTONS ---
-            # Helper to save safely
-            def save_and_update(df_to_save):
-                # 1. Create directory if it doesn't exist (FIXES THE ERROR)
-                os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-                # 2. Save local CSV
-                df_to_save.to_csv(CSV_PATH, index=False)
-                # 3. Sync to cloud
-                sync_to_google_sheets(df_to_save)
-                st.rerun()
+    if graded_count > 0: save_db(df)
+    batch_sync_to_cloud(df)
 
-            if c2.button("✅ Won", key=f"won_{index}"):
-                profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
-                df_full.at[index, 'status'] = "Won"
-                df_full.at[index, 'result'] = "Won"
-                df_full.at[index, 'profit'] = round(profit, 2)
-                save_and_update(df_full)
-
-            if c3.button("❌ Lost", key=f"lost_{index}"):
-                profit = calculate_manual_profit(row.get('play_odds', 0), "Lost")
-                df_full.at[index, 'status'] = "Lost"
-                df_full.at[index, 'result'] = "Lost"
-                df_full.at[index, 'profit'] = round(profit, 2)
-                save_and_update(df_full)
-
-            if c4.button("➖ Push", key=f"push_{index}"):
-                df_full.at[index, 'status'] = "Push"
-                df_full.at[index, 'result'] = "Push"
-                df_full.at[index, 'profit'] = 0.0
-                save_and_update(df_full)
-            
-            st.divider()
-
-# --- MAIN UI ---
-st.title("💸 Smart Money Tracker v2.2")
-df = load_data()
-
-if df.empty:
-    st.info("No bets tracked yet.")
-else:
-    cols = df.columns.tolist()
-    sel_col = 'play_selection' if 'play_selection' in cols else 'selection'
-    book_col = 'play_book' if 'play_book' in cols else 'sportsbook'
-    sharp_col = 'sharp_book' if 'sharp_book' in cols else 'sharp_source'
-    
-    # 1. REMOVE DFS BOOKS FIRST
-    if book_col:
-        df = df[~df[book_col].isin(DFS_BOOKS)]
-        
-    df['Bet Type'] = df.apply(categorize_bet, axis=1)
-    df['Bet Side'] = df[sel_col].apply(get_bet_side)
-    df['Prop Type'] = df.apply(extract_prop_category_dashboard, axis=1)
-    
-    def create_combo_category(row):
-        league = str(row.get('league', 'Unknown'))
-        prop = row['Prop Type']
-        side = row['Bet Side']
-        bet_type = row['Bet Type']
-
-        if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']:
-            return f"{league} {prop}"
-        if bet_type == 'Total' or prop == 'Total':
-            return f"{side} {league} Game Total"
-        if bet_type == 'Player Prop':
-            return f"{side} {league} Player {prop}"
-        if side == "Other":
-            return f"{league} {prop}"
-        return f"{side} {league} {prop}"
-
-    df['Combo Category'] = df.apply(create_combo_category, axis=1)
-
-    if 'sharp_odds' in df.columns and 'play_odds' in df.columns:
-        df['Arb %'] = df.apply(calculate_arb_percent, axis=1)
-        def get_arb_bucket(val):
-            if val == 0: return "None"
-            if val < 0: return "Negative (No Arb)"
-            if val < 1: return "0% - 1%"
-            if val < 3: return "1% - 3%"
-            if val < 5: return "3% - 5%"
-            return "5%+"
-        df['Arb Bucket'] = df['Arb %'].apply(get_arb_bucket)
-
-    # --- SIDEBAR ---
-    st.sidebar.header("Filters")
-    metric_mode = st.sidebar.radio("Show Results As:", ["Total Profit ($)", "ROI (%)"], index=0)
-    
-    if metric_mode == "Total Profit ($)":
-        agg_func = 'sum'
-        y_label = "Profit ($)"
-        text_fmt = '$.0f'
-        metric_title = "Profit"
-    else:
-        agg_func = 'mean'
-        y_label = "ROI (%)"
-        text_fmt = '.1f%'
-        metric_title = "ROI"
-
-    st.sidebar.markdown("---")
-    date_range = []
-    if 'timestamp' in df.columns and not df.empty:
-        min_date = df['timestamp'].min().date()
-        max_date = df['timestamp'].max().date()
-        date_range = st.sidebar.date_input("Select Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-
-    st.sidebar.markdown("---")
-    fade_mode = st.sidebar.toggle("🔄 FADE MODE", value=False)
-    if fade_mode:
-        st.sidebar.warning("⚠️ VIEWING OPPOSITE RESULTS")
-        df['profit'] = df.apply(calculate_fade_profit, axis=1)
-    
-    st.sidebar.markdown("---")
-    col_min, col_max = st.sidebar.columns(2)
-    min_odds_input = col_min.text_input("Min Odds", value="", placeholder="-150")
-    max_odds_input = col_max.text_input("Max Odds", value="", placeholder="+150")
-
-    st.sidebar.markdown("---")
-    col_liq_min, col_liq_max = st.sidebar.columns(2)
-    min_liq_input = col_liq_min.text_input("Min Liq ($)", value="", placeholder="1000")
-    max_liq_input = col_liq_max.text_input("Max Liq ($)", value="", placeholder="50000")
-
-    # --- FILTERING ---
-    df_filtered = df.copy()
-    if 'timestamp' in df_filtered.columns and len(date_range) == 2:
-        df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
-    
-    # 2. DEFINING FILTERS
-    all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
-    selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
-    
-    # --- BOOK FILTER ---
-    all_books = sorted(df[book_col].unique()) if book_col in df.columns else []
-    selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
-    # -----------------------
-
-    all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
-    selected_types = st.sidebar.multiselect("Filter by Type", options=all_types, default=all_types)
-    all_sides = ['Over', 'Under', 'Other']
-    selected_sides = st.sidebar.multiselect("Filter by Side", options=all_sides, default=all_sides)
-
-    # 3. APPLYING FILTERS
-    if 'league' in df.columns and selected_leagues:
-        df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
-    
-    # --- APPLYING BOOK FILTER ---
-    if book_col in df.columns and selected_books:
-        df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
-    # --------------------------------
-
-    if selected_types:
-        df_filtered = df_filtered[df_filtered['Bet Type'].isin(selected_types)]
-    if selected_sides:
-        df_filtered = df_filtered[df_filtered['Bet Side'].isin(selected_sides)]
-
-    if min_odds_input or max_odds_input:
-        df_filtered['decimal_odds'] = df_filtered['play_odds'].apply(lambda x: get_decimal_odds(parse_odds_val(x)))
-        min_dec = get_decimal_odds(parse_odds_val(min_odds_input)) if min_odds_input else 0
-        max_dec = get_decimal_odds(parse_odds_val(max_odds_input)) if max_odds_input else 999
-        if min_dec > 0: df_filtered = df_filtered[df_filtered['decimal_odds'] >= min_dec]
-        if max_dec < 999: df_filtered = df_filtered[df_filtered['decimal_odds'] <= max_dec]
-
-    if min_liq_input or max_liq_input:
-        if 'liquidity' in df_filtered.columns:
-            df_filtered['liq_clean'] = pd.to_numeric(df_filtered['liquidity'].astype(str).str.replace('$', '').str.replace(',', ''), errors='coerce').fillna(0)
-            if min_liq_input:
-                try: df_filtered = df_filtered[df_filtered['liq_clean'] >= float(min_liq_input)]
-                except: pass
-            if max_liq_input:
-                try: df_filtered = df_filtered[df_filtered['liq_clean'] <= float(max_liq_input)]
-                except: pass
-
-    # --- METRICS UI ---
-    # Case insensitive check for Open/Pending
-    status_col = df_filtered['status'].str.lower()
-    closed_bets = df_filtered[~status_col.isin(['open', 'pending'])].copy()
-    pending_count = len(df_filtered[status_col.isin(['open', 'pending'])])
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Bets", len(df_filtered))
-    col2.metric("Pending", pending_count)
-    
-    if not closed_bets.empty and 'profit' in cols:
-        total_profit = closed_bets['profit'].sum()
-        total_wagered = len(closed_bets) * UNIT_SIZE
-        roi = (total_profit / total_wagered) * 100 if total_wagered > 0 else 0.0
-        col3.metric("Total Profit", f"${total_profit:.2f}")
-        col4.metric("ROI", f"{roi:.1f}%")
-    else:
-        col3.metric("Total Profit", "$0.00")
-        col4.metric("ROI", "0.0%")
-
-    st.markdown("---")
-    # --- UPDATED TABS: ADDED MANUAL GRADER ---
-    tab_view, tab_analysis, tab_leaderboard, tab_grader = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard", "📝 Manual Grader"])
-
-    with tab_view:
-        st.subheader("Bet History")
-        target_cols = ['timestamp', 'league', 'matchup', 'market', 'Combo Category', 'Bet Type', 'Bet Side', sel_col, 'play_odds', 'Arb %', book_col, sharp_col, 'liquidity', 'status', 'profit']
-        final_cols = [c for c in target_cols if c in df_filtered.columns]
-        display_df = df_filtered[final_cols].copy()
-        if 'timestamp' in display_df.columns:
-            display_df = display_df.sort_values(by='timestamp', ascending=False)
-        st.dataframe(display_df, use_container_width=True)
-
-    with tab_analysis:
-        if closed_bets.empty:
-            st.warning("No graded bets available.")
-        else:
-            if 'league' in closed_bets.columns and 'market' in closed_bets.columns:
-                st.subheader(f"🔥 {metric_title} Heatmap")
-                heatmap_data = closed_bets.groupby(['league', 'market'])['profit'].agg(agg_func).reset_index()
-                fig_heat = px.density_heatmap(
-                    heatmap_data, x="market", y="league", z="profit", text_auto=text_fmt,
-                    color_continuous_scale="RdYlGn", range_color=[-500 if agg_func=='sum' else -50, 500 if agg_func=='sum' else 50]
-                )
-                st.plotly_chart(fig_heat, use_container_width=True)
-
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.subheader("Bet Type")
-                type_stats = closed_bets.groupby('Bet Type')['profit'].agg(agg_func).reset_index()
-                st.plotly_chart(plot_metric_bar(type_stats, 'Bet Type', 'profit', "", y_label, text_fmt), use_container_width=True)
-            with col_b:
-                st.subheader("Over vs Under")
-                side_stats = closed_bets.groupby('Bet Side')['profit'].agg(agg_func).reset_index()
-                st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
-
-            st.markdown("---")
-            col_c, col_d = st.columns(2)
-            
-            with col_c:
-                if 'Arb Bucket' in closed_bets.columns:
-                    st.subheader(f"📉 {metric_title} by Arb %")
-                    arb_stats = closed_bets.groupby('Arb Bucket')['profit'].agg(agg_func).reset_index()
-                    sorter = ["Negative (No Arb)", "None", "0% - 1%", "1% - 3%", "3% - 5%", "5%+"]
-                    valid_cats = [x for x in sorter if x in arb_stats['Arb Bucket'].unique()]
-                    arb_stats['Arb Bucket'] = pd.Categorical(arb_stats['Arb Bucket'], categories=sorter, ordered=True)
-                    arb_stats = arb_stats.sort_values('Arb Bucket')
-                    st.plotly_chart(plot_metric_bar(arb_stats, 'Arb Bucket', 'profit', f"Is Higher Arb % Better?", y_label, text_fmt), use_container_width=True)
-
-            with col_d:
-                if book_col:
-                    st.subheader(f"🏦 {metric_title} by Sportsbook")
-                    book_stats = closed_bets.groupby(book_col)['profit'].agg(agg_func).reset_index()
-                    st.plotly_chart(plot_metric_bar(book_stats, book_col, 'profit', f"Best Sportsbooks ({metric_title})", y_label, text_fmt), use_container_width=True)
-
-            if sharp_col in closed_bets.columns:
-                st.markdown("---")
-                st.subheader("Sharp Source Analysis")
-                sharp_data = closed_bets.copy().dropna(subset=[sharp_col])
-                sharp_exploded = sharp_data.assign(sharp_split=sharp_data[sharp_col].astype(str).str.split(', ')).explode('sharp_split')
-                sharp_stats = sharp_exploded.groupby('sharp_split')['profit'].agg(agg_func).reset_index()
-                st.plotly_chart(plot_metric_bar(sharp_stats, 'sharp_split', 'profit', "", y_label, text_fmt), use_container_width=True)
-
-    with tab_leaderboard:
-        if closed_bets.empty:
-            st.warning("No graded bets available.")
-        else:
-            st.subheader("🏆 Most Profitable Categories")
-            min_bets = st.slider("Minimum Bet Sample Size", 1, 50, 5)
-            
-            leaderboard = closed_bets.groupby('Combo Category').agg(
-                Total_Profit=('profit', 'sum'),
-                Bet_Count=('profit', 'count')
-            ).reset_index()
-            
-            leaderboard['ROI'] = (leaderboard['Total_Profit'] / (leaderboard['Bet_Count'] * UNIT_SIZE)) * 100
-            leaderboard = leaderboard[leaderboard['Bet_Count'] >= min_bets]
-            leaderboard = leaderboard.sort_values(by='ROI', ascending=False)
-            
-            display_lb = leaderboard.copy()
-            display_lb['ROI'] = display_lb['ROI'].map('{:.1f}%'.format)
-            display_lb['Total_Profit'] = display_lb['Total_Profit'].map('${:,.2f}'.format)
-            st.dataframe(display_lb, use_container_width=True, height=600)
-    
-    # --- NEW GRADER TAB ---
-    with tab_grader:
-        # Pass the FULL df, not the filtered one, to ensure we can grade anything currently open
-        render_manual_grader(df)
-
-    # --- DEBUG SECTION ---
-    with st.expander("🛠️ Debug: Uncategorized Markets"):
-        st.write("If you see 'Other', it means the update didn't work. Check below:")
-        debug_df = df[['market', 'Prop Type', 'Combo Category']].drop_duplicates().sort_values('market')
-        st.dataframe(debug_df, use_container_width=True)
+if __name__ == "__main__":
+    main()
