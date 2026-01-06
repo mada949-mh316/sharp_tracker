@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import os
 import numpy as np
 import re
@@ -17,7 +18,7 @@ CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v2.2", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.0", layout="wide")
 
 # --- DATA LOADING ---
 def load_data():
@@ -32,7 +33,7 @@ def load_data():
         st.error(f"Error reading Google Sheet: {e}")
         return pd.DataFrame()
 
-# --- HELPER: SYNC TO GOOGLE SHEETS (WRITE) ---
+# --- HELPER: SYNC TO GOOGLE SHEETS ---
 def sync_to_google_sheets(df):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -45,23 +46,16 @@ def sync_to_google_sheets(df):
     except Exception as e:
         st.error(f"Sync Failed: {e}")
 
-# --- HELPER: MANUAL PROFIT CALCULATION ---
+# --- HELPER: CALCULATIONS ---
 def calculate_manual_profit(odds, result):
-    try:
-        odds = float(odds)
-    except:
-        return 0.0
-
+    try: odds = float(odds)
+    except: return 0.0
     if result == "Won":
-        if odds > 0:
-            return UNIT_SIZE * (odds / 100.0)
-        else:
-            return UNIT_SIZE * (100.0 / abs(odds))
+        return UNIT_SIZE * (odds / 100.0) if odds > 0 else UNIT_SIZE * (100.0 / abs(odds))
     elif result == "Lost":
         return -float(UNIT_SIZE)
-    return 0.0  # Push
+    return 0.0
 
-# --- HELPER: ODDS PARSING ---
 def parse_odds_val(val):
     if pd.isna(val): return 0.0
     s = str(val).lower().replace('−', '-') 
@@ -77,7 +71,6 @@ def get_decimal_odds(american_odds):
     if american_odds > 0: return 1 + (american_odds / 100.0)
     else: return 1 + (100.0 / abs(american_odds))
 
-# --- HELPER: ARBITRAGE CALCULATION ---
 def calculate_arb_percent(row):
     play = parse_odds_val(row.get('play_odds', 0))
     sharp = parse_odds_val(row.get('sharp_odds', 0))
@@ -91,7 +84,6 @@ def calculate_arb_percent(row):
     if total_imp == 0: return 0.0
     return ((1 / total_imp) - 1) * 100
 
-# --- HELPER: FADE PROFIT ---
 def calculate_fade_profit(row):
     original_result = row.get('result', 'Pending')
     if original_result not in ['Won', 'Lost']: return 0.0
@@ -117,29 +109,19 @@ def plot_metric_bar(data, x_col, y_col, title, y_label, text_fmt):
     fig.add_hline(y=0, line_width=2, line_color="white", opacity=0.5)
     return fig
 
-# --- HELPER: CLASSIFICATION (FIXED FOR NHL) ---
+# --- HELPER: CLASSIFICATION ---
 def categorize_bet(row):
     market = str(row.get('market', '')).lower()
     selection = str(row.get('play_selection', '')).lower()
     
-    # 1. Player Props (Highest Priority if explicit)
     if "player" in market: return "Player Prop"
-    
-    # 2. Totals (Check BEFORE generic props keywords)
-    # 
     if "total" in market or "over/under" in market: return "Total"
     if market == "points": return "Total"
-
-    # 3. Prop Keywords (Now safe because "Total Goals" was caught by step 2)
     if any(x in market for x in ["shots", "sog", "receptions", "saves", "goals", "assists", "rebounds", "hits"]):
         return "Player Prop"
-        
     if "moneyline" in market: return "Moneyline"
     if "spread" in market or "run line" in market or "puck line" in market or "handicap" in market: return "Spread"
-    
-    # 4. Fallback for Totals based on Selection (e.g. "Over 6.5")
     if "over" in selection or "under" in selection: return "Total"
-    
     return "Moneyline"
 
 def get_bet_side(selection):
@@ -154,20 +136,16 @@ def extract_prop_category_dashboard(row):
     m = market.lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
     
     if "total" in m: return "Total"
-    
     if "points" in m:
-        if "rebounds" in m or "assists" in m: 
-            pass 
+        if "rebounds" in m or "assists" in m: pass 
         else:
             if "player" in market.lower(): return "Points"
             if league == "NHL": return "Points"
             return "Total"
-
     if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
     if "points" in m and "rebounds" in m: return "Pts + Reb"
     if "points" in m and "assists" in m: return "Pts + Ast"
     if "rebounds" in m and "assists" in m: return "Reb + Ast"
-    
     if "points" in m: return "Points"
     if "rebounds" in m: return "Rebounds"
     if "assists" in m: return "Assists"
@@ -175,28 +153,23 @@ def extract_prop_category_dashboard(row):
     if "blocks" in m: return "Blocks"
     if "steals" in m: return "Steals"
     if "turnovers" in m: return "Turnovers"
-    
     if "shots" in m or "sog" in m: return "Shots on Goal"
     if "saves" in m: return "Saves"
     if "goals" in m or "score" in m: return "Goals"
     if "hits" in m: return "Hits"
     if "faceoff" in m: return "Faceoffs"
-    
     if "receptions" in m: return "Receptions"
     if "passing" in m: return "Passing"
     if "rushing" in m: return "Rushing"
     if "receiving" in m: return "Receiving"
     if "touchdown" in m: return "Touchdowns"
-    
     if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
     if "moneyline" in m: return "Moneyline"
-    
     return m.title()
 
 # --- MANUAL GRADER UI FUNCTION ---
 def render_manual_grader(df_full):
     st.header("📝 Manual Grader")
-    
     if 'status' not in df_full.columns:
         st.error("Status column missing.")
         return
@@ -213,7 +186,6 @@ def render_manual_grader(df_full):
     for index, row in open_bets.iterrows():
         with st.container():
             c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-            
             with c1:
                 st.markdown(f"**{row.get('matchup', 'Unknown')}**")
                 st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
@@ -243,16 +215,30 @@ def render_manual_grader(df_full):
                 df_full.at[index, 'result'] = "Push"
                 df_full.at[index, 'profit'] = 0.0
                 save_and_update(df_full)
-            
             st.divider()
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v2.2")
+st.title("💸 Smart Money Tracker v3.0")
 df = load_data()
 
 if df.empty:
     st.info("No bets tracked yet.")
 else:
+    # --- ORPHAN CHECKER (Runs immediately on load) ---
+    if 'timestamp' in df.columns and 'status' in df.columns:
+        now = pd.Timestamp.now()
+        # Find bets that are 'Open' and older than 48 hours
+        orphans = df[
+            (df['status'] == 'Open') & 
+            (df['timestamp'] < (now - pd.Timedelta(hours=48)))
+        ]
+        
+        if not orphans.empty:
+            st.warning(f"⚠️ You have {len(orphans)} bets pending for more than 48 hours. They may need manual grading.")
+            with st.expander("🔍 View Orphaned Bets"):
+                st.dataframe(orphans[['timestamp', 'league', 'matchup', 'play_selection']])
+    # -----------------------------------------------
+
     cols = df.columns.tolist()
     sel_col = 'play_selection' if 'play_selection' in cols else 'selection'
     book_col = 'play_book' if 'play_book' in cols else 'sportsbook'
@@ -270,16 +256,10 @@ else:
         prop = row['Prop Type']
         side = row['Bet Side']
         bet_type = row['Bet Type']
-
-        if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']:
-            return f"{league} {prop}"
-        if bet_type == 'Total' or prop == 'Total':
-            return f"{side} {league} Game Total"
-        if bet_type == 'Player Prop':
-            return f"{side} {league} Player {prop}"
-        if side == "Other":
-            return f"{league} {prop}"
-        return f"{side} {league} {prop}"
+        if bet_type in ['Spread', 'Moneyline'] or prop in ['Spread', 'Moneyline']: return f"{league} {prop}"
+        if bet_type == 'Total' or prop == 'Total': return f"{side} {league} Game Total"
+        if bet_type == 'Player Prop': return f"{side} {league} Player {prop}"
+        return f"{league} {prop}"
 
     df['Combo Category'] = df.apply(create_combo_category, axis=1)
 
@@ -350,10 +330,8 @@ else:
 
     if 'league' in df.columns and selected_leagues:
         df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
-    
     if book_col in df.columns and selected_books:
         df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
-
     if selected_types:
         df_filtered = df_filtered[df_filtered['Bet Type'].isin(selected_types)]
     if selected_sides:
@@ -396,7 +374,11 @@ else:
         col4.metric("ROI", "0.0%")
 
     st.markdown("---")
-    tab_view, tab_analysis, tab_leaderboard, tab_grader = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard", "📝 Manual Grader"])
+    
+    # --- TABS ---
+    tab_view, tab_analysis, tab_leaderboard, tab_sim, tab_grader = st.tabs([
+        "📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard", "💰 Simulator", "📝 Manual Grader"
+    ])
 
     with tab_view:
         st.subheader("Bet History")
@@ -411,6 +393,26 @@ else:
         if closed_bets.empty:
             st.warning("No graded bets available.")
         else:
+            # --- CALENDAR HEATMAP ---
+            st.subheader("📅 Daily Profit Heatmap")
+            
+            # Aggregate profit by date
+            daily_data = closed_bets.groupby(closed_bets['timestamp'].dt.date)['profit'].sum().reset_index()
+            daily_data.columns = ['Date', 'Profit']
+            daily_data['Week'] = pd.to_datetime(daily_data['Date']).dt.isocalendar().week
+            daily_data['Day'] = pd.to_datetime(daily_data['Date']).dt.day_name()
+            
+            # Simple bar chart view (Cleaner than complex heatmap for now)
+            fig_cal = px.bar(
+                daily_data, x="Date", y="Profit",
+                color="Profit",
+                color_continuous_scale="RdYlGn",
+                title="Daily Profit/Loss"
+            )
+            fig_cal.add_hline(y=0, line_width=1, line_color="white")
+            st.plotly_chart(fig_cal, use_container_width=True)
+            # ------------------------
+
             if 'league' in closed_bets.columns and 'market' in closed_bets.columns:
                 st.subheader(f"🔥 {metric_title} Heatmap")
                 heatmap_data = closed_bets.groupby(['league', 'market'])['profit'].agg(agg_func).reset_index()
@@ -430,7 +432,6 @@ else:
                 side_stats = closed_bets.groupby('Bet Side')['profit'].agg(agg_func).reset_index()
                 st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
 
-            st.markdown("---")
             col_c, col_d = st.columns(2)
             with col_c:
                 if 'Arb Bucket' in closed_bets.columns:
@@ -440,7 +441,6 @@ else:
                     arb_stats['Arb Bucket'] = pd.Categorical(arb_stats['Arb Bucket'], categories=sorter, ordered=True)
                     arb_stats = arb_stats.sort_values('Arb Bucket')
                     st.plotly_chart(plot_metric_bar(arb_stats, 'Arb Bucket', 'profit', f"Is Higher Arb % Better?", y_label, text_fmt), use_container_width=True)
-
             with col_d:
                 if book_col:
                     st.subheader(f"🏦 {metric_title} by Sportsbook")
@@ -448,7 +448,6 @@ else:
                     st.plotly_chart(plot_metric_bar(book_stats, book_col, 'profit', f"Best Sportsbooks ({metric_title})", y_label, text_fmt), use_container_width=True)
 
             if sharp_col in closed_bets.columns:
-                st.markdown("---")
                 st.subheader("Sharp Source Analysis")
                 sharp_data = closed_bets.copy().dropna(subset=[sharp_col])
                 sharp_exploded = sharp_data.assign(sharp_split=sharp_data[sharp_col].astype(str).str.split(', ')).explode('sharp_split')
@@ -475,7 +474,62 @@ else:
             display_lb['ROI'] = display_lb['ROI'].map('{:.1f}%'.format)
             display_lb['Total_Profit'] = display_lb['Total_Profit'].map('${:,.2f}'.format)
             st.dataframe(display_lb, use_container_width=True, height=600)
-    
+
+    # --- BANKROLL SIMULATOR ---
+    with tab_sim:
+        st.subheader("💰 Bankroll Growth Simulator")
+        if closed_bets.empty:
+            st.warning("No graded bets to simulate.")
+        else:
+            col_sim1, col_sim2 = st.columns(2)
+            start_bankroll = col_sim1.number_input("Starting Bankroll ($)", value=10000, step=500)
+            pct_stake = col_sim2.slider("Percentage Staking Strategy (%)", 0.5, 5.0, 2.0, step=0.5) / 100.0
+            
+            # Sort chronologically for simulation
+            sim_df = closed_bets.sort_values('timestamp').copy()
+            
+            # 1. Flat Betting Simulation (Already calculated as 'profit')
+            sim_df['Flat_Bankroll'] = start_bankroll + sim_df['profit'].cumsum()
+            
+            # 2. Percentage Betting Simulation
+            # Need to recalculate profit based on dynamic stake
+            dynamic_bankroll = [start_bankroll]
+            current_br = start_bankroll
+            
+            for index, row in sim_df.iterrows():
+                # Determine result multiplier (e.g., +0.91 for win, -1.0 for loss)
+                odds = parse_odds_val(row.get('play_odds', 0))
+                res = row.get('result', 'Push')
+                
+                stake = current_br * pct_stake
+                profit = 0
+                
+                if res == "Won":
+                    if odds > 0: profit = stake * (odds / 100.0)
+                    else: profit = stake * (100.0 / abs(odds))
+                elif res == "Lost":
+                    profit = -stake
+                
+                current_br += profit
+                dynamic_bankroll.append(current_br)
+            
+            # Align lengths (drop initial value for plotting)
+            sim_df['Pct_Bankroll'] = dynamic_bankroll[1:]
+            
+            # Plot Comparison
+            fig_sim = px.line(sim_df, x='timestamp', y=['Flat_Bankroll', 'Pct_Bankroll'], 
+                              title="Flat vs. Compounding Growth",
+                              labels={'value': 'Bankroll ($)', 'variable': 'Strategy'})
+            st.plotly_chart(fig_sim, use_container_width=True)
+            
+            # Stats
+            final_flat = sim_df['Flat_Bankroll'].iloc[-1]
+            final_pct = sim_df['Pct_Bankroll'].iloc[-1]
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Final Bankroll (Flat)", f"${final_flat:,.0f}", delta=f"${final_flat - start_bankroll:,.0f}")
+            c2.metric(f"Final Bankroll ({pct_stake*100}%)", f"${final_pct:,.0f}", delta=f"${final_pct - start_bankroll:,.0f}")
+
     with tab_grader:
         render_manual_grader(df)
 
