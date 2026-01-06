@@ -95,6 +95,14 @@ def calculate_fade_profit(row):
     if fade_odds > 0: return UNIT_SIZE * (fade_odds / 100.0)
     else: return UNIT_SIZE * (100.0 / abs(fade_odds))
 
+# --- HELPER: SAVE UTILITY ---
+def save_and_update(df_to_save):
+    """Saves DataFrame to CSV and syncs to Google Sheets"""
+    os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+    df_to_save.to_csv(CSV_PATH, index=False)
+    sync_to_google_sheets(df_to_save)
+    st.rerun()
+
 # --- HELPER: PLOTTING ---
 def plot_metric_bar(data, x_col, y_col, title, y_label, text_fmt):
     if data.empty: return px.bar(title="No Data")
@@ -190,12 +198,6 @@ def render_manual_grader(df_full):
                 st.markdown(f"**{row.get('matchup', 'Unknown')}**")
                 st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
             
-            def save_and_update(df_to_save):
-                os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-                df_to_save.to_csv(CSV_PATH, index=False)
-                sync_to_google_sheets(df_to_save)
-                st.rerun()
-
             if c2.button("✅ Won", key=f"won_{index}"):
                 profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
                 df_full.at[index, 'status'] = "Won"
@@ -224,20 +226,48 @@ df = load_data()
 if df.empty:
     st.info("No bets tracked yet.")
 else:
-    # --- ORPHAN CHECKER (Runs immediately on load) ---
+    # --- ORPHAN CHECKER (INTERACTIVE) ---
     if 'timestamp' in df.columns and 'status' in df.columns:
         now = pd.Timestamp.now()
-        # Find bets that are 'Open' and older than 48 hours
         orphans = df[
             (df['status'] == 'Open') & 
             (df['timestamp'] < (now - pd.Timedelta(hours=48)))
         ]
         
         if not orphans.empty:
-            st.warning(f"⚠️ You have {len(orphans)} bets pending for more than 48 hours. They may need manual grading.")
-            with st.expander("🔍 View Orphaned Bets"):
-                st.dataframe(orphans[['timestamp', 'league', 'matchup', 'play_selection']])
-    # -----------------------------------------------
+            st.warning(f"⚠️ You have {len(orphans)} bets pending for more than 48 hours. Please grade them below.")
+            
+            with st.expander("🔍 Grade Orphaned Bets"):
+                for index, row in orphans.iterrows():
+                    # Reuse layout similar to manual grader
+                    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+                    with c1:
+                        st.markdown(f"**{row.get('matchup', 'Unknown')}** ({row.get('league', '')})")
+                        st.caption(f"{row.get('play_selection', '')} | {row['timestamp'].strftime('%Y-%m-%d')}")
+                    
+                    # Using unique keys (orphan_*) so they don't clash with main grader
+                    if c2.button("✅ Won", key=f"orphan_won_{index}"):
+                        profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
+                        df.at[index, 'status'] = "Won"
+                        df.at[index, 'result'] = "Won"
+                        df.at[index, 'profit'] = round(profit, 2)
+                        save_and_update(df)
+
+                    if c3.button("❌ Lost", key=f"orphan_lost_{index}"):
+                        profit = calculate_manual_profit(row.get('play_odds', 0), "Lost")
+                        df.at[index, 'status'] = "Lost"
+                        df.at[index, 'result'] = "Lost"
+                        df.at[index, 'profit'] = round(profit, 2)
+                        save_and_update(df)
+
+                    if c4.button("➖ Push", key=f"orphan_push_{index}"):
+                        df.at[index, 'status'] = "Push"
+                        df.at[index, 'result'] = "Push"
+                        df.at[index, 'profit'] = 0.0
+                        save_and_update(df)
+                    
+                    st.divider()
+    # ------------------------------------
 
     cols = df.columns.tolist()
     sel_col = 'play_selection' if 'play_selection' in cols else 'selection'
