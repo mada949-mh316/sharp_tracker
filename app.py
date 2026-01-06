@@ -47,7 +47,6 @@ def sync_to_google_sheets(df):
 
 # --- HELPER: MANUAL PROFIT CALCULATION ---
 def calculate_manual_profit(odds, result):
-    # Ensure odds is a number
     try:
         odds = float(odds)
     except:
@@ -118,22 +117,29 @@ def plot_metric_bar(data, x_col, y_col, title, y_label, text_fmt):
     fig.add_hline(y=0, line_width=2, line_color="white", opacity=0.5)
     return fig
 
-# --- HELPER: CLASSIFICATION ---
+# --- HELPER: CLASSIFICATION (FIXED FOR NHL) ---
 def categorize_bet(row):
     market = str(row.get('market', '')).lower()
     selection = str(row.get('play_selection', '')).lower()
     
+    # 1. Player Props (Highest Priority if explicit)
     if "player" in market: return "Player Prop"
+    
+    # 2. Totals (Check BEFORE generic props keywords)
+    # 
+    if "total" in market or "over/under" in market: return "Total"
+    if market == "points": return "Total"
+
+    # 3. Prop Keywords (Now safe because "Total Goals" was caught by step 2)
     if any(x in market for x in ["shots", "sog", "receptions", "saves", "goals", "assists", "rebounds", "hits"]):
         return "Player Prop"
-    
-    if market == "points" and "player" not in market:
-        return "Total"
         
     if "moneyline" in market: return "Moneyline"
     if "spread" in market or "run line" in market or "puck line" in market or "handicap" in market: return "Spread"
-    if "total" in market: return "Total"
+    
+    # 4. Fallback for Totals based on Selection (e.g. "Over 6.5")
     if "over" in selection or "under" in selection: return "Total"
+    
     return "Moneyline"
 
 def get_bet_side(selection):
@@ -188,11 +194,9 @@ def extract_prop_category_dashboard(row):
     return m.title()
 
 # --- MANUAL GRADER UI FUNCTION ---
-# --- MANUAL GRADER UI FUNCTION ---
 def render_manual_grader(df_full):
     st.header("📝 Manual Grader")
     
-    # Filter for Open/Pending bets
     if 'status' not in df_full.columns:
         st.error("Status column missing.")
         return
@@ -206,24 +210,17 @@ def render_manual_grader(df_full):
 
     st.write(f"Found {len(open_bets)} open bets.")
 
-    # Iterate through open bets
     for index, row in open_bets.iterrows():
         with st.container():
-            # Layout: Info | Won | Lost | Push
             c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
             
             with c1:
                 st.markdown(f"**{row.get('matchup', 'Unknown')}**")
                 st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
             
-            # --- ACTION BUTTONS ---
-            # Helper to save safely
             def save_and_update(df_to_save):
-                # 1. Create directory if it doesn't exist (FIXES THE ERROR)
                 os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-                # 2. Save local CSV
                 df_to_save.to_csv(CSV_PATH, index=False)
-                # 3. Sync to cloud
                 sync_to_google_sheets(df_to_save)
                 st.rerun()
 
@@ -261,7 +258,6 @@ else:
     book_col = 'play_book' if 'play_book' in cols else 'sportsbook'
     sharp_col = 'sharp_book' if 'sharp_book' in cols else 'sharp_source'
     
-    # 1. REMOVE DFS BOOKS FIRST
     if book_col:
         df = df[~df[book_col].isin(DFS_BOOKS)]
         
@@ -341,28 +337,22 @@ else:
     if 'timestamp' in df_filtered.columns and len(date_range) == 2:
         df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
     
-    # 2. DEFINING FILTERS
     all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
     
-    # --- BOOK FILTER ---
     all_books = sorted(df[book_col].unique()) if book_col in df.columns else []
     selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
-    # -----------------------
 
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
     selected_types = st.sidebar.multiselect("Filter by Type", options=all_types, default=all_types)
     all_sides = ['Over', 'Under', 'Other']
     selected_sides = st.sidebar.multiselect("Filter by Side", options=all_sides, default=all_sides)
 
-    # 3. APPLYING FILTERS
     if 'league' in df.columns and selected_leagues:
         df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
     
-    # --- APPLYING BOOK FILTER ---
     if book_col in df.columns and selected_books:
         df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
-    # --------------------------------
 
     if selected_types:
         df_filtered = df_filtered[df_filtered['Bet Type'].isin(selected_types)]
@@ -387,7 +377,6 @@ else:
                 except: pass
 
     # --- METRICS UI ---
-    # Case insensitive check for Open/Pending
     status_col = df_filtered['status'].str.lower()
     closed_bets = df_filtered[~status_col.isin(['open', 'pending'])].copy()
     pending_count = len(df_filtered[status_col.isin(['open', 'pending'])])
@@ -407,7 +396,6 @@ else:
         col4.metric("ROI", "0.0%")
 
     st.markdown("---")
-    # --- UPDATED TABS: ADDED MANUAL GRADER ---
     tab_view, tab_analysis, tab_leaderboard, tab_grader = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard", "📝 Manual Grader"])
 
     with tab_view:
@@ -444,13 +432,11 @@ else:
 
             st.markdown("---")
             col_c, col_d = st.columns(2)
-            
             with col_c:
                 if 'Arb Bucket' in closed_bets.columns:
                     st.subheader(f"📉 {metric_title} by Arb %")
                     arb_stats = closed_bets.groupby('Arb Bucket')['profit'].agg(agg_func).reset_index()
                     sorter = ["Negative (No Arb)", "None", "0% - 1%", "1% - 3%", "3% - 5%", "5%+"]
-                    valid_cats = [x for x in sorter if x in arb_stats['Arb Bucket'].unique()]
                     arb_stats['Arb Bucket'] = pd.Categorical(arb_stats['Arb Bucket'], categories=sorter, ordered=True)
                     arb_stats = arb_stats.sort_values('Arb Bucket')
                     st.plotly_chart(plot_metric_bar(arb_stats, 'Arb Bucket', 'profit', f"Is Higher Arb % Better?", y_label, text_fmt), use_container_width=True)
@@ -490,12 +476,9 @@ else:
             display_lb['Total_Profit'] = display_lb['Total_Profit'].map('${:,.2f}'.format)
             st.dataframe(display_lb, use_container_width=True, height=600)
     
-    # --- NEW GRADER TAB ---
     with tab_grader:
-        # Pass the FULL df, not the filtered one, to ensure we can grade anything currently open
         render_manual_grader(df)
 
-    # --- DEBUG SECTION ---
     with st.expander("🛠️ Debug: Uncategorized Markets"):
         st.write("If you see 'Other', it means the update didn't work. Check below:")
         debug_df = df[['market', 'Prop Type', 'Combo Category']].drop_duplicates().sort_values('market')
