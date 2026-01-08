@@ -152,59 +152,38 @@ def get_bet_side(selection):
 def extract_prop_category_dashboard(row):
     market = str(row.get('market', ''))
     league = str(row.get('league', ''))
-    bet_type = str(row.get('Bet Type', '')) # Uses already calculated Bet Type
-    
     m = market.lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
     
-    # 1. If it's a Game Total, return Total (but skip if it's a Player Prop)
-    if bet_type == 'Total': return "Total"
-    
-    # 2. Points Logic
+    if "total" in m: return "Total"
     if "points" in m:
-        if "rebounds" in m or "assists" in m: 
-            pass 
+        if "rebounds" in m or "assists" in m: pass 
         else:
             if "player" in market.lower(): return "Points"
-            if league == "NHL": return "Points" # Explicitly catch NHL Player Points
-            if league == "NBA" and "total" not in m: return "Points"
-            return "Points" # Default for player props
-
-    # 3. Combo Props
+            if league == "NHL": return "Points"
+            return "Total"
     if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
     if "points" in m and "rebounds" in m: return "Pts + Reb"
     if "points" in m and "assists" in m: return "Pts + Ast"
     if "rebounds" in m and "assists" in m: return "Reb + Ast"
-    
-    # 4. Standard Stats
     if "points" in m: return "Points"
     if "rebounds" in m: return "Rebounds"
     if "assists" in m: return "Assists"
     if "threes" in m or "3-point" in m or "3pt" in m: return "Threes"
-    
-    # 5. Defense
-    if "blocked" in m: return "Blocked Shots" # Explicitly catch "Blocked Shots"
     if "blocks" in m: return "Blocks"
     if "steals" in m: return "Steals"
     if "turnovers" in m: return "Turnovers"
-    
-    # 6. Hockey / Soccer
-    if "saves" in m: return "Goalie Saves" # New Goalie Saves Category
     if "shots" in m or "sog" in m: return "Shots on Goal"
+    if "saves" in m: return "Saves"
     if "goals" in m or "score" in m: return "Goals"
     if "hits" in m: return "Hits"
     if "faceoff" in m: return "Faceoffs"
-    
-    # 7. Football
     if "receptions" in m: return "Receptions"
     if "passing" in m: return "Passing"
     if "rushing" in m: return "Rushing"
     if "receiving" in m: return "Receiving"
     if "touchdown" in m: return "Touchdowns"
-    
-    # 8. Lines
     if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Spread"
     if "moneyline" in m: return "Moneyline"
-    
     return m.title()
 
 # --- MANUAL GRADER UI FUNCTION ---
@@ -230,12 +209,6 @@ def render_manual_grader(df_full):
                 st.markdown(f"**{row.get('matchup', 'Unknown')}**")
                 st.caption(f"{row.get('play_selection', '')} ({row.get('market', '')}) @ {row.get('play_odds', '')}")
             
-            def save_and_update(df_to_save):
-                os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-                df_to_save.to_csv(CSV_PATH, index=False)
-                sync_to_google_sheets(df_to_save)
-                st.rerun()
-
             if c2.button("✅ Won", key=f"won_{index}"):
                 profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
                 df_full.at[index, 'status'] = "Won"
@@ -277,11 +250,13 @@ else:
             
             with st.expander("🔍 Grade Orphaned Bets"):
                 for index, row in orphans.iterrows():
+                    # Reuse layout similar to manual grader
                     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
                     with c1:
                         st.markdown(f"**{row.get('matchup', 'Unknown')}** ({row.get('league', '')})")
                         st.caption(f"{row.get('play_selection', '')} | {row['timestamp'].strftime('%Y-%m-%d')}")
                     
+                    # Using unique keys (orphan_*) so they don't clash with main grader
                     if c2.button("✅ Won", key=f"orphan_won_{index}"):
                         profit = calculate_manual_profit(row.get('play_odds', 0), "Won")
                         df.at[index, 'status'] = "Won"
