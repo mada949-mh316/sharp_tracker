@@ -17,7 +17,7 @@ CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.1 (Turbo)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.2 (Debug Mode)", layout="wide")
 
 # --- 1. OPTIMIZED DATA LOADING (WITH CACHING) ---
 @st.cache_data(ttl=3600)  # Cache in RAM for 1 hour or until cleared
@@ -120,11 +120,7 @@ def calculate_fade_profit(row):
     else: # If original lost, fade wins
         original_odds = parse_odds_val(row.get('play_odds', 100))
         if original_odds == 0: return 0.0
-        # Fade odds are roughly the inverse, but simplified for dashboard:
-        # We win UNIT_SIZE * (Odds / 100) if we bet the other side. 
-        # For simplicity in 'Fade Mode', we assume -110 inverse on losses or just reverse PnL?
-        # Better: Assume we took the other side at -110? No, let's just invert PnL if flat, 
-        # but since odds vary, let's keep your logic:
+        # Fade odds are roughly the inverse
         fade_odds = original_odds * -1
         if fade_odds > 0: return UNIT_SIZE * (fade_odds / 100.0)
         else: return UNIT_SIZE * (100.0 / abs(fade_odds))
@@ -265,7 +261,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.1 (Turbo)")
+st.title("💸 Smart Money Tracker v3.2 (Debug)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -314,14 +310,6 @@ else:
 
     if 'sharp_odds' in df.columns and 'play_odds' in df.columns:
         df['Arb %'] = df.apply(calculate_arb_percent, axis=1)
-        def get_arb_bucket(val):
-            if val == 0: return "None"
-            if val < 0: return "Negative (No Arb)"
-            if val < 1: return "0% - 1%"
-            if val < 3: return "1% - 3%"
-            if val < 5: return "3% - 5%"
-            return "5%+"
-        df['Arb Bucket'] = df['Arb %'].apply(get_arb_bucket)
 
     # --- SIDEBAR FILTERS ---
     st.sidebar.header("Filters")
@@ -359,13 +347,19 @@ else:
     selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
 
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
-    selected_types = st.sidebar.multiselect("Filter by Type", options=all_types, default=all_types)
+    selected_types = st.sidebar.multiselect("Filter by Bet Category", options=all_types, default=all_types)
+    
+    # --- NEW FILTER: ACTUAL MARKET/PROP ---
+    all_props = sorted(df['Prop Type'].unique())
+    selected_props = st.sidebar.multiselect("Filter by Market/Prop", options=all_props, default=all_props)
+    
     all_sides = ['Over', 'Under', 'Other']
     selected_sides = st.sidebar.multiselect("Filter by Side", options=all_sides, default=all_sides)
 
     if selected_leagues: df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
     if selected_books: df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
     if selected_types: df_filtered = df_filtered[df_filtered['Bet Type'].isin(selected_types)]
+    if selected_props: df_filtered = df_filtered[df_filtered['Prop Type'].isin(selected_props)]
     if selected_sides: df_filtered = df_filtered[df_filtered['Bet Side'].isin(selected_sides)]
 
     # --- METRICS UI ---
@@ -392,7 +386,8 @@ else:
 
     with tab_view:
         st.subheader("Bet History")
-        target_cols = ['timestamp', 'league', 'matchup', 'market', 'Combo Category', 'Bet Type', 'Bet Side', sel_col, 'play_odds', 'Arb %', book_col, sharp_col, 'status', 'profit']
+        # Added 'Prop Type' to the view here
+        target_cols = ['timestamp', 'league', 'matchup', 'Prop Type', 'play_selection', 'market', 'Bet Side', 'play_odds', 'status', 'profit']
         final_cols = [c for c in target_cols if c in df_filtered.columns]
         display_df = df_filtered[final_cols].copy()
         if 'timestamp' in display_df.columns:
