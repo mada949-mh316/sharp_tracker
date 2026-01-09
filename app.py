@@ -17,7 +17,7 @@ CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.2 (Debug Mode)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.4 (Manual Odds)", layout="wide")
 
 # --- 1. OPTIMIZED DATA LOADING (WITH CACHING) ---
 @st.cache_data(ttl=3600)  # Cache in RAM for 1 hour or until cleared
@@ -261,7 +261,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.2 (Debug)")
+st.title("💸 Smart Money Tracker v3.4 (Manual Odds)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -296,6 +296,9 @@ else:
     df['Bet Side'] = df[sel_col].apply(get_bet_side)
     df['Prop Type'] = df.apply(extract_prop_category_dashboard, axis=1)
     
+    # Pre-calculate Odds Value for Filtering
+    df['Odds Value'] = df['play_odds'].apply(parse_odds_val)
+    
     def create_combo_category(row):
         league = str(row.get('league', 'Unknown'))
         prop = row['Prop Type']
@@ -328,6 +331,21 @@ else:
         date_range = st.sidebar.date_input("Select Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
     st.sidebar.markdown("---")
+    
+    # --- ODDS FILTER (MANUAL INPUT) ---
+    st.sidebar.subheader("Filter by Odds")
+    col_o1, col_o2 = st.sidebar.columns(2)
+    
+    # Calculate sensible defaults
+    default_min = int(df['Odds Value'].min()) if not df.empty else -10000
+    default_max = int(df['Odds Value'].max()) if not df.empty else 10000
+    
+    with col_o1:
+        min_odds_input = st.number_input("Min Odds (e.g. -200)", value=default_min, step=10)
+    with col_o2:
+        max_odds_input = st.number_input("Max Odds (e.g. +200)", value=default_max, step=10)
+    # ----------------------------------
+
     fade_mode = st.sidebar.toggle("🔄 FADE MODE", value=False)
     if fade_mode:
         st.sidebar.warning("⚠️ VIEWING OPPOSITE RESULTS")
@@ -337,8 +355,13 @@ else:
     
     # --- FILTERING ---
     df_filtered = df.copy()
+    
+    # Date Filter
     if 'timestamp' in df_filtered.columns and len(date_range) == 2:
         df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
+    
+    # Odds Filter
+    df_filtered = df_filtered[(df_filtered['Odds Value'] >= min_odds_input) & (df_filtered['Odds Value'] <= max_odds_input)]
     
     all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
