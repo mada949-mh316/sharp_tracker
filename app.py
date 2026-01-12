@@ -17,15 +17,11 @@ CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.4 (Manual Odds)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.5 (Odds Ranges)", layout="wide")
 
 # --- 1. OPTIMIZED DATA LOADING (WITH CACHING) ---
 @st.cache_data(ttl=3600)  # Cache in RAM for 1 hour or until cleared
 def load_data(force_cloud=False):
-    """
-    Loads data. Prioritizes Local CSV. 
-    If missing or force_cloud=True, downloads from Google Sheets AND saves locally.
-    """
     # 1. Try Local CSV first (Fastest)
     if not force_cloud and os.path.exists(CSV_PATH):
         try:
@@ -34,19 +30,17 @@ def load_data(force_cloud=False):
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
             return df
         except Exception:
-            pass # CSV might be corrupt, fall back to cloud
+            pass 
 
     # 2. Google Sheets Fallback
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
-        df = conn.read(ttl=0) # Pull fresh data
+        df = conn.read(ttl=0) 
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # CRITICAL: Save to CSV so next reload is fast
         os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
         df.to_csv(CSV_PATH, index=False)
-        
         return df
     except Exception as e:
         st.error(f"Error reading data: {e}")
@@ -54,10 +48,9 @@ def load_data(force_cloud=False):
 
 # --- HELPER: SAVE & CLEAR CACHE ---
 def save_local_only(df_to_save):
-    """Saves to CSV and CLEARS CACHE so the app sees the update instantly."""
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     df_to_save.to_csv(CSV_PATH, index=False)
-    st.cache_data.clear() # <--- Important: Clears the old RAM data
+    st.cache_data.clear() 
     st.toast("💾 Saved locally!", icon="💾")
 
 # --- HELPER: CLOUD SYNC ---
@@ -105,22 +98,18 @@ def calculate_arb_percent(row):
     dec_play = get_decimal_odds(play)
     dec_sharp = get_decimal_odds(sharp)
     if dec_play == 0 or dec_sharp == 0: return 0.0
-    imp_play = 1 / dec_play
-    imp_sharp = 1 / dec_sharp
-    total_imp = imp_play + imp_sharp
+    total_imp = (1 / dec_play) + (1 / dec_sharp)
     if total_imp == 0: return 0.0
     return ((1 / total_imp) - 1) * 100
 
 def calculate_fade_profit(row):
     original_result = row.get('result', 'Pending')
     if original_result not in ['Won', 'Lost']: return 0.0
-    # Invert result
     if original_result == 'Won':
         return -float(UNIT_SIZE)
-    else: # If original lost, fade wins
+    else: 
         original_odds = parse_odds_val(row.get('play_odds', 100))
         if original_odds == 0: return 0.0
-        # Fade odds are roughly the inverse
         fade_odds = original_odds * -1
         if fade_odds > 0: return UNIT_SIZE * (fade_odds / 100.0)
         else: return UNIT_SIZE * (100.0 / abs(fade_odds))
@@ -143,7 +132,6 @@ def plot_metric_bar(data, x_col, y_col, title, y_label, text_fmt):
 def categorize_bet(row):
     market = str(row.get('market', '')).lower()
     selection = str(row.get('play_selection', '')).lower()
-    
     if "player" in market: return "Player Prop"
     if "total" in market or "over/under" in market: return "Total"
     if market == "points": return "Total"
@@ -164,7 +152,6 @@ def extract_prop_category_dashboard(row):
     market = str(row.get('market', ''))
     league = str(row.get('league', ''))
     m = market.lower().replace("player ", "").replace("alternate ", "").replace("game ", "")
-    
     if "total" in m: return "Total"
     if "points" in m:
         if "rebounds" in m or "assists" in m: pass 
@@ -197,6 +184,17 @@ def extract_prop_category_dashboard(row):
     if "moneyline" in m: return "Moneyline"
     return m.title()
 
+# --- NEW: ODDS BUCKETING ---
+def get_odds_bucket(val):
+    if val < -750: return "Less than -750"
+    if -750 <= val < -300: return "-750 to -300"
+    if -300 <= val < -150: return "-300 to -150"
+    if -150 <= val <= 150: return "-150 to +150"
+    if 150 < val <= 300: return "+150 to +300"
+    if 300 < val <= 750: return "+300 to +750"
+    if val > 750: return "+750 and Higher"
+    return "Unknown"
+
 # --- OPTIMIZED BULK GRADER ---
 def render_manual_grader(df_full):
     st.header("📝 Bulk Manual Grader")
@@ -216,13 +214,10 @@ def render_manual_grader(df_full):
     cols_to_show = ['timestamp', 'league', 'matchup', 'play_selection', 'market', 'play_odds', 'status']
     cols_to_show = [c for c in cols_to_show if c in open_bets.columns]
 
-    # Editable DataFrame
     edited_df = st.data_editor(
         open_bets[cols_to_show],
         column_config={
-            "status": st.column_config.SelectboxColumn(
-                "Status", width="medium", options=["Open", "Won", "Lost", "Push"], required=True
-            ),
+            "status": st.column_config.SelectboxColumn("Status", width="medium", options=["Open", "Won", "Lost", "Push"], required=True),
             "play_odds": st.column_config.NumberColumn("Odds", disabled=True),
             "matchup": st.column_config.TextColumn("Matchup", disabled=True),
             "play_selection": st.column_config.TextColumn("Selection", disabled=True),
@@ -261,7 +256,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.4 (Manual Odds)")
+st.title("💸 Smart Money Tracker v3.5 (Odds Analysis)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -273,11 +268,10 @@ with col_refresh:
         st.rerun()
 with col_sync:
     if st.button("☁️ Push to Cloud"):
-        df = load_data() # Ensure we have data
+        df = load_data() 
         with st.spinner("Syncing to Google Sheets..."):
             sync_to_google_sheets(df)
 
-# Load data (Cached!)
 df = load_data()
 
 if df.empty:
@@ -287,7 +281,6 @@ else:
     cols = df.columns.tolist()
     sel_col = 'play_selection' if 'play_selection' in cols else 'selection'
     book_col = 'play_book' if 'play_book' in cols else 'sportsbook'
-    sharp_col = 'sharp_book' if 'sharp_book' in cols else 'sharp_source'
     
     if book_col:
         df = df[~df[book_col].isin(DFS_BOOKS)]
@@ -296,8 +289,9 @@ else:
     df['Bet Side'] = df[sel_col].apply(get_bet_side)
     df['Prop Type'] = df.apply(extract_prop_category_dashboard, axis=1)
     
-    # Pre-calculate Odds Value for Filtering
+    # Pre-calculate Odds Value for Filtering & Bucketing
     df['Odds Value'] = df['play_odds'].apply(parse_odds_val)
+    df['Odds Bucket'] = df['Odds Value'].apply(get_odds_bucket)
     
     def create_combo_category(row):
         league = str(row.get('league', 'Unknown'))
@@ -331,20 +325,13 @@ else:
         date_range = st.sidebar.date_input("Select Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
     st.sidebar.markdown("---")
-    
-    # --- ODDS FILTER (MANUAL INPUT) ---
+    # ODDS FILTER (MANUAL INPUT)
     st.sidebar.subheader("Filter by Odds")
     col_o1, col_o2 = st.sidebar.columns(2)
-    
-    # Calculate sensible defaults
     default_min = int(df['Odds Value'].min()) if not df.empty else -10000
     default_max = int(df['Odds Value'].max()) if not df.empty else 10000
-    
-    with col_o1:
-        min_odds_input = st.number_input("Min Odds (e.g. -200)", value=default_min, step=10)
-    with col_o2:
-        max_odds_input = st.number_input("Max Odds (e.g. +200)", value=default_max, step=10)
-    # ----------------------------------
+    with col_o1: min_odds_input = st.number_input("Min Odds", value=default_min, step=10)
+    with col_o2: max_odds_input = st.number_input("Max Odds", value=default_max, step=10)
 
     fade_mode = st.sidebar.toggle("🔄 FADE MODE", value=False)
     if fade_mode:
@@ -355,12 +342,9 @@ else:
     
     # --- FILTERING ---
     df_filtered = df.copy()
-    
-    # Date Filter
     if 'timestamp' in df_filtered.columns and len(date_range) == 2:
         df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
     
-    # Odds Filter
     df_filtered = df_filtered[(df_filtered['Odds Value'] >= min_odds_input) & (df_filtered['Odds Value'] <= max_odds_input)]
     
     all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
@@ -372,7 +356,6 @@ else:
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
     selected_types = st.sidebar.multiselect("Filter by Bet Category", options=all_types, default=all_types)
     
-    # --- NEW FILTER: ACTUAL MARKET/PROP ---
     all_props = sorted(df['Prop Type'].unique())
     selected_props = st.sidebar.multiselect("Filter by Market/Prop", options=all_props, default=all_props)
     
@@ -405,11 +388,10 @@ else:
         col4.metric("ROI", "0.0%")
 
     st.markdown("---")
-    tab_view, tab_analysis, tab_leaderboard, tab_sim, tab_grader = st.tabs(["📊 Live Log", "📈 Deep Dive", "🏆 Leaderboard", "💰 Simulator", "📝 Manual Grader"])
+    tab_view, tab_analysis, tab_odds, tab_leaderboard, tab_sim, tab_grader = st.tabs(["📊 Live Log", "📈 Deep Dive", "🎲 Odds Analysis", "🏆 Leaderboard", "💰 Simulator", "📝 Manual Grader"])
 
     with tab_view:
         st.subheader("Bet History")
-        # Added 'Prop Type' to the view here
         target_cols = ['timestamp', 'league', 'matchup', 'Prop Type', 'play_selection', 'market', 'Bet Side', 'play_odds', 'status', 'profit']
         final_cols = [c for c in target_cols if c in df_filtered.columns]
         display_df = df_filtered[final_cols].copy()
@@ -440,6 +422,36 @@ else:
                 side_stats = closed_bets.groupby('Bet Side')['profit'].agg(agg_func).reset_index()
                 st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
 
+    with tab_odds:
+        st.subheader("🎲 Profitability by Odds Range")
+        if closed_bets.empty:
+            st.warning("No graded bets to analyze.")
+        else:
+            # Group by custom buckets
+            odds_stats = closed_bets.groupby('Odds Bucket').agg(
+                Total_Profit=('profit', 'sum'),
+                Bet_Count=('profit', 'count')
+            ).reset_index()
+            
+            # Calculate ROI
+            odds_stats['ROI'] = (odds_stats['Total_Profit'] / (odds_stats['Bet_Count'] * UNIT_SIZE)) * 100
+            
+            # Define Sort Order
+            sort_order = ["Less than -750", "-750 to -300", "-300 to -150", "-150 to +150", "+150 to +300", "+300 to +750", "+750 and Higher"]
+            odds_stats['Odds Bucket'] = pd.Categorical(odds_stats['Odds Bucket'], categories=sort_order, ordered=True)
+            odds_stats = odds_stats.sort_values('Odds Bucket')
+            
+            # Plot
+            target_metric = 'Total_Profit' if metric_mode == "Total Profit ($)" else 'ROI'
+            fig_odds = plot_metric_bar(odds_stats, 'Odds Bucket', target_metric, "Performance by Odds Bucket", y_label, text_fmt)
+            st.plotly_chart(fig_odds, use_container_width=True)
+            
+            # Table View
+            display_odds = odds_stats.copy()
+            display_odds['ROI'] = display_odds['ROI'].map('{:.1f}%'.format)
+            display_odds['Total_Profit'] = display_odds['Total_Profit'].map('${:,.2f}'.format)
+            st.dataframe(display_odds, use_container_width=True)
+
     with tab_leaderboard:
         if closed_bets.empty:
             st.warning("No graded bets available.")
@@ -461,7 +473,6 @@ else:
             display_lb['Total_Profit'] = display_lb['Total_Profit'].map('${:,.2f}'.format)
             st.dataframe(display_lb, use_container_width=True, height=600)
 
-    # --- BANKROLL SIMULATOR (VECTORIZED) ---
     with tab_sim:
         st.subheader("💰 Bankroll Growth Simulator")
         if closed_bets.empty:
@@ -473,11 +484,8 @@ else:
             
             sim_df = closed_bets.sort_values('timestamp').copy()
             
-            # 1. Flat Betting
             sim_df['Flat_Bankroll'] = start_bankroll + sim_df['profit'].cumsum()
             
-            # 2. Percentage Betting (Vectorized for Speed)
-            # Create array of multipliers: +0.91 for win, -1.0 for loss
             def get_multiplier(row):
                 if row['result'] == 'Won':
                     odds = parse_odds_val(row['play_odds'])
@@ -487,8 +495,6 @@ else:
                 return 0.0
             
             sim_df['multiplier'] = sim_df.apply(get_multiplier, axis=1)
-            
-            # Compounding formula: Bankroll_t = Bankroll_{t-1} * (1 + stake_pct * multiplier)
             sim_df['growth_factor'] = 1 + (pct_stake * sim_df['multiplier'])
             sim_df['Pct_Bankroll'] = start_bankroll * sim_df['growth_factor'].cumprod()
             
