@@ -17,7 +17,7 @@ CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.5 (Odds Ranges)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.7 (Sharp Source Graph)", layout="wide")
 
 # --- 1. OPTIMIZED DATA LOADING (WITH CACHING) ---
 @st.cache_data(ttl=3600)  # Cache in RAM for 1 hour or until cleared
@@ -184,7 +184,7 @@ def extract_prop_category_dashboard(row):
     if "moneyline" in m: return "Moneyline"
     return m.title()
 
-# --- NEW: ODDS BUCKETING ---
+# --- ODDS BUCKETING ---
 def get_odds_bucket(val):
     if val < -750: return "Less than -750"
     if -750 <= val < -300: return "-750 to -300"
@@ -217,7 +217,9 @@ def render_manual_grader(df_full):
     edited_df = st.data_editor(
         open_bets[cols_to_show],
         column_config={
-            "status": st.column_config.SelectboxColumn("Status", width="medium", options=["Open", "Won", "Lost", "Push"], required=True),
+            "status": st.column_config.SelectboxColumn(
+                "Status", width="medium", options=["Open", "Won", "Lost", "Push"], required=True
+            ),
             "play_odds": st.column_config.NumberColumn("Odds", disabled=True),
             "matchup": st.column_config.TextColumn("Matchup", disabled=True),
             "play_selection": st.column_config.TextColumn("Selection", disabled=True),
@@ -256,7 +258,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.5 (Odds Analysis)")
+st.title("💸 Smart Money Tracker v3.7 (Sharp Source Graph)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -281,6 +283,7 @@ else:
     cols = df.columns.tolist()
     sel_col = 'play_selection' if 'play_selection' in cols else 'selection'
     book_col = 'play_book' if 'play_book' in cols else 'sportsbook'
+    sharp_col = 'sharp_book' if 'sharp_book' in cols else 'sharp_source'
     
     if book_col:
         df = df[~df[book_col].isin(DFS_BOOKS)]
@@ -289,7 +292,6 @@ else:
     df['Bet Side'] = df[sel_col].apply(get_bet_side)
     df['Prop Type'] = df.apply(extract_prop_category_dashboard, axis=1)
     
-    # Pre-calculate Odds Value for Filtering & Bucketing
     df['Odds Value'] = df['play_odds'].apply(parse_odds_val)
     df['Odds Bucket'] = df['Odds Value'].apply(get_odds_bucket)
     
@@ -325,7 +327,8 @@ else:
         date_range = st.sidebar.date_input("Select Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
 
     st.sidebar.markdown("---")
-    # ODDS FILTER (MANUAL INPUT)
+    
+    # ODDS FILTER
     st.sidebar.subheader("Filter by Odds")
     col_o1, col_o2 = st.sidebar.columns(2)
     default_min = int(df['Odds Value'].min()) if not df.empty else -10000
@@ -392,7 +395,7 @@ else:
 
     with tab_view:
         st.subheader("Bet History")
-        target_cols = ['timestamp', 'league', 'matchup', 'Prop Type', 'play_selection', 'market', 'Bet Side', 'play_odds', 'status', 'profit']
+        target_cols = ['timestamp', 'league', 'matchup', 'Prop Type', 'play_selection', 'market', 'Bet Side', 'play_odds', 'play_book', 'sharp_book', 'status', 'profit']
         final_cols = [c for c in target_cols if c in df_filtered.columns]
         display_df = df_filtered[final_cols].copy()
         if 'timestamp' in display_df.columns:
@@ -403,6 +406,23 @@ else:
         if closed_bets.empty:
             st.warning("No graded bets available.")
         else:
+            # --- SHARP SOURCE CHART ---
+            col_chart_1, col_chart_2 = st.columns(2)
+            with col_chart_1:
+                st.subheader("🦅 Sharp Source Performance")
+                # Group by Sharp Source (Top 10)
+                if 'sharp_book' in closed_bets.columns:
+                    sharp_stats = closed_bets.groupby('sharp_book')['profit'].agg(agg_func).reset_index()
+                    sharp_stats = sharp_stats.sort_values('profit', ascending=False).head(10)
+                    st.plotly_chart(plot_metric_bar(sharp_stats, 'sharp_book', 'profit', "", y_label, text_fmt), use_container_width=True)
+                else:
+                    st.warning("Sharp book data missing.")
+            
+            with col_chart_2:
+                st.subheader("Over vs Under")
+                side_stats = closed_bets.groupby('Bet Side')['profit'].agg(agg_func).reset_index()
+                st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
+
             if 'league' in closed_bets.columns and 'market' in closed_bets.columns:
                 st.subheader(f"🔥 {metric_title} Heatmap")
                 heatmap_data = closed_bets.groupby(['league', 'market'])['profit'].agg(agg_func).reset_index()
@@ -412,41 +432,30 @@ else:
                 )
                 st.plotly_chart(fig_heat, use_container_width=True)
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.subheader("Bet Type")
-                type_stats = closed_bets.groupby('Bet Type')['profit'].agg(agg_func).reset_index()
-                st.plotly_chart(plot_metric_bar(type_stats, 'Bet Type', 'profit', "", y_label, text_fmt), use_container_width=True)
-            with col_b:
-                st.subheader("Over vs Under")
-                side_stats = closed_bets.groupby('Bet Side')['profit'].agg(agg_func).reset_index()
-                st.plotly_chart(plot_metric_bar(side_stats, 'Bet Side', 'profit', "", y_label, text_fmt), use_container_width=True)
+            st.subheader("Bet Type")
+            type_stats = closed_bets.groupby('Bet Type')['profit'].agg(agg_func).reset_index()
+            st.plotly_chart(plot_metric_bar(type_stats, 'Bet Type', 'profit', "", y_label, text_fmt), use_container_width=True)
 
     with tab_odds:
         st.subheader("🎲 Profitability by Odds Range")
         if closed_bets.empty:
             st.warning("No graded bets to analyze.")
         else:
-            # Group by custom buckets
             odds_stats = closed_bets.groupby('Odds Bucket').agg(
                 Total_Profit=('profit', 'sum'),
                 Bet_Count=('profit', 'count')
             ).reset_index()
             
-            # Calculate ROI
             odds_stats['ROI'] = (odds_stats['Total_Profit'] / (odds_stats['Bet_Count'] * UNIT_SIZE)) * 100
             
-            # Define Sort Order
             sort_order = ["Less than -750", "-750 to -300", "-300 to -150", "-150 to +150", "+150 to +300", "+300 to +750", "+750 and Higher"]
             odds_stats['Odds Bucket'] = pd.Categorical(odds_stats['Odds Bucket'], categories=sort_order, ordered=True)
             odds_stats = odds_stats.sort_values('Odds Bucket')
             
-            # Plot
             target_metric = 'Total_Profit' if metric_mode == "Total Profit ($)" else 'ROI'
             fig_odds = plot_metric_bar(odds_stats, 'Odds Bucket', target_metric, "Performance by Odds Bucket", y_label, text_fmt)
             st.plotly_chart(fig_odds, use_container_width=True)
             
-            # Table View
             display_odds = odds_stats.copy()
             display_odds['ROI'] = display_odds['ROI'].map('{:.1f}%'.format)
             display_odds['Total_Profit'] = display_odds['Total_Profit'].map('${:,.2f}'.format)
@@ -483,15 +492,13 @@ else:
             pct_stake = col_sim2.slider("Percentage Staking Strategy (%)", 0.5, 5.0, 2.0, step=0.5) / 100.0
             
             sim_df = closed_bets.sort_values('timestamp').copy()
-            
             sim_df['Flat_Bankroll'] = start_bankroll + sim_df['profit'].cumsum()
             
             def get_multiplier(row):
                 if row['result'] == 'Won':
                     odds = parse_odds_val(row['play_odds'])
                     return (odds / 100.0) if odds > 0 else (100.0 / abs(odds))
-                elif row['result'] == 'Lost':
-                    return -1.0
+                elif row['result'] == 'Lost': return -1.0
                 return 0.0
             
             sim_df['multiplier'] = sim_df.apply(get_multiplier, axis=1)
