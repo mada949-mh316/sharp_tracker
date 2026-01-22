@@ -2,16 +2,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
-import numpy as np
 import re
-from datetime import datetime, date
-from streamlit_gsheets import GSheetsConnection
+from datetime import datetime
 import gspread
-from google.oauth2.service_account import Credentials  # 🚨 Modern Auth Library
-from gspread_dataframe import set_with_dataframe
+from google.oauth2.service_account import Credentials
+from gspread_dataframe import set_with_dataframe, get_as_dataframe
 
 # --- CONFIGURATION ---
-# Robust path handling for local dev
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "data", "bets.csv")
 CREDS_FILE = os.path.join(BASE_DIR, "creds.json")
@@ -20,9 +17,41 @@ SHEET_NAME = "Smart Money Bets"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.8 (Cloud Ready)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.9 (Robust Auth)", layout="wide")
 
-# --- 1. OPTIMIZED DATA LOADING ---
+# --- AUTHENTICATION HELPER (THE FIX) ---
+def get_cloud_client():
+    """
+    Robustly gets a gspread client from either Streamlit Secrets or local creds.json.
+    Automatically fixes 'Incorrect padding' errors by sanitizing the private key.
+    """
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    
+    try:
+        # 1. Try Streamlit Secrets (Cloud)
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            creds_dict = dict(st.secrets["connections"]["gsheets"])
+            
+            # 🚨 CRITICAL FIX: Replace literal "\n" with actual newlines
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+            return gspread.authorize(creds)
+
+        # 2. Fallback to Local File
+        elif os.path.exists(CREDS_FILE):
+            creds = Credentials.from_service_account_file(CREDS_FILE, scopes=scope)
+            return gspread.authorize(creds)
+            
+        else:
+            return None
+
+    except Exception as e:
+        st.error(f"Authentication Error: {e}")
+        return None
+
+# --- DATA LOADING ---
 @st.cache_data(ttl=3600)
 def load_data(force_cloud=False):
     # 1. Try Local CSV first (Fastest)
@@ -32,22 +61,32 @@ def load_data(force_cloud=False):
             if 'timestamp' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
             return df
-        except Exception:
-            pass 
+        except: pass 
 
-    # 2. Google Sheets Fallback (Uses st.connection with Secrets)
+    # 2. Cloud Fallback (Uses robust helper now)
     try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        df = conn.read(ttl=0) 
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        client = get_cloud_client()
+        if not client:
+            st.warning("⚠️ No credentials found. Cannot pull from cloud.")
+            return pd.DataFrame()
+
+        sheet = client.open(SHEET_NAME).sheet1
+        # robustly get data including headers
+        df = get_as_dataframe(sheet, evaluate_formulas=True, dtype=str)
         
-        # Save locally for cache speedup
+        # Clean up empty rows that gspread might fetch
+        df = df.dropna(how='all')
+        
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        
+        # Save locally
         os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
         df.to_csv(CSV_PATH, index=False)
         return df
+
     except Exception as e:
-        st.error(f"Error reading data: {e}")
+        st.error(f"Error reading cloud data: {e}")
         return pd.DataFrame()
 
 # --- HELPER: SAVE LOCAL ---
@@ -57,24 +96,14 @@ def save_local_only(df_to_save):
     st.cache_data.clear() 
     st.toast("💾 Saved locally!", icon="💾")
 
-# --- HELPER: CLOUD SYNC (SMART AUTH) ---
+# --- HELPER: CLOUD SYNC ---
 def sync_to_google_sheets(df):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        
-        # 🚨 SMART AUTHENTICATION LOGIC
-        # 1. Try Streamlit Secrets (Cloud)
-        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            creds_dict = dict(st.secrets["connections"]["gsheets"])
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        # 2. Fallback to Local File (Mac)
-        elif os.path.exists(CREDS_FILE):
-            creds = Credentials.from_service_account_file(CREDS_FILE, scopes=scope)
-        else:
-            st.error("❌ No credentials found! Setup secrets or creds.json.")
+        client = get_cloud_client()
+        if not client:
+            st.error("❌ Auth failed. Check secrets/creds.")
             return
 
-        client = gspread.authorize(creds)
         sheet = client.open(SHEET_NAME).sheet1
         sheet.clear()
         set_with_dataframe(sheet, df)
@@ -267,13 +296,11 @@ def render_manual_grader(df_full):
                     df_full.at[index, 'profit'] = 0.0
 
         if changes_count > 0:
-            # 1. Save Locally (if available)
             if os.path.exists(CSV_PATH) or os.access(os.path.dirname(CSV_PATH), os.W_OK):
                 save_local_only(df_full)
             else:
-                st.warning("⚠️ Could not save locally (cloud mode). Syncing to Google Sheets only.")
+                st.warning("⚠️ Cloud Mode: Syncing to Google Sheets (Local save skipped).")
 
-            # 2. Push to Cloud (Uses Secrets)
             with st.spinner("Syncing changes to Google Sheets..."):
                 sync_to_google_sheets(df_full)
                 
@@ -282,7 +309,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.8 (Cloud Ready)")
+st.title("💸 Smart Money Tracker v3.9 (Robust Auth)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
