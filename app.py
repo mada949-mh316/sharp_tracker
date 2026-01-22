@@ -17,84 +17,68 @@ SHEET_NAME = "Smart Money Bets"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v4.0 (Auth Fix)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v4.1 (Type Fix)", layout="wide")
 
-# --- AUTHENTICATION HELPER (AGGRESSIVE FIX) ---
+# --- AUTHENTICATION HELPER ---
 def get_cloud_client():
-    """
-    Robustly gets a gspread client.
-    Aggressively cleans the Private Key to fix 'Incorrect padding' errors.
-    """
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    
     try:
-        # 1. Try Streamlit Secrets (Cloud)
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             creds_dict = dict(st.secrets["connections"]["gsheets"])
-            
-            # 🚨 AGGRESSIVE KEY CLEANING 🚨
             if "private_key" in creds_dict:
-                raw_key = creds_dict["private_key"]
-                # 1. Remove any surrounding quotes that might have been pasted
-                raw_key = raw_key.strip('"').strip("'")
-                # 2. Replace literal "\n" (slash+n) with actual newline character
-                raw_key = raw_key.replace("\\n", "\n")
-                # 3. Ensure headers are clean
-                if "-----BEGIN PRIVATE KEY-----" not in raw_key:
-                    st.error("❌ Private Key is missing the 'BEGIN PRIVATE KEY' header.")
-                    return None
-                
+                raw_key = creds_dict["private_key"].strip('"').strip("'").replace("\\n", "\n")
+                if "-----BEGIN PRIVATE KEY-----" not in raw_key: return None
                 creds_dict["private_key"] = raw_key
-            
             creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
             return gspread.authorize(creds)
-
-        # 2. Fallback to Local File
         elif os.path.exists(CREDS_FILE):
             creds = Credentials.from_service_account_file(CREDS_FILE, scopes=scope)
             return gspread.authorize(creds)
-            
-        else:
-            return None
-
+        else: return None
     except Exception as e:
         st.error(f"Authentication Error: {e}")
         return None
 
-# --- DATA LOADING ---
+# --- DATA LOADING (WITH TYPE CONVERSION) ---
 @st.cache_data(ttl=3600)
 def load_data(force_cloud=False):
-    # 1. Try Local CSV first (Fastest)
+    df = pd.DataFrame()
+    
+    # 1. Try Local CSV first
     if not force_cloud and os.path.exists(CSV_PATH):
         try:
             df = pd.read_csv(CSV_PATH)
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-            return df
         except: pass 
 
     # 2. Cloud Fallback
-    try:
-        client = get_cloud_client()
-        if not client:
-            st.warning("⚠️ No credentials found. Cannot pull from cloud.")
-            return pd.DataFrame()
-
-        sheet = client.open(SHEET_NAME).sheet1
-        df = get_as_dataframe(sheet, evaluate_formulas=True, dtype=str)
-        df = df.dropna(how='all')
-        
+    if df.empty:
+        try:
+            client = get_cloud_client()
+            if client:
+                sheet = client.open(SHEET_NAME).sheet1
+                # Load as string to preserve data, then fix types later
+                df = get_as_dataframe(sheet, evaluate_formulas=True, dtype=str)
+                df = df.dropna(how='all')
+                os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+                df.to_csv(CSV_PATH, index=False)
+        except Exception as e:
+            st.error(f"Error reading cloud data: {e}")
+    
+    # 🚨 CRITICAL FIX: ENSURE NUMERIC TYPES 🚨
+    if not df.empty:
+        # Convert timestamp
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
         
-        # Save locally
-        os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-        df.to_csv(CSV_PATH, index=False)
-        return df
+        # Convert profit to float (force non-numeric to NaN, then fill with 0.0)
+        if 'profit' in df.columns:
+            df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0)
+            
+        # Convert odds to float/int just in case
+        if 'play_odds' in df.columns:
+            df['play_odds'] = pd.to_numeric(df['play_odds'], errors='coerce').fillna(0)
 
-    except Exception as e:
-        st.error(f"Error reading cloud data: {e}")
-        return pd.DataFrame()
+    return df
 
 # --- HELPER: SAVE LOCAL ---
 def save_local_only(df_to_save):
@@ -110,7 +94,6 @@ def sync_to_google_sheets(df):
         if not client:
             st.error("❌ Auth failed. Check secrets/creds.")
             return
-
         sheet = client.open(SHEET_NAME).sheet1
         sheet.clear()
         set_with_dataframe(sheet, df)
@@ -316,7 +299,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v4.0 (Auth Fix)")
+st.title("💸 Smart Money Tracker v4.1 (Type Fix)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -578,3 +561,5 @@ else:
     with st.expander("🛠️ Debug"):
         st.write("Current Data Shape:", df.shape)
         st.write("Cache Info:", st.cache_data)
+        if 'profit' in df.columns:
+            st.write("Profit Column Type:", df['profit'].dtype)
