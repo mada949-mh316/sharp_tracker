@@ -17,13 +17,13 @@ SHEET_NAME = "Smart Money Bets"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.9 (Robust Auth)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v4.0 (Auth Fix)", layout="wide")
 
-# --- AUTHENTICATION HELPER (THE FIX) ---
+# --- AUTHENTICATION HELPER (AGGRESSIVE FIX) ---
 def get_cloud_client():
     """
-    Robustly gets a gspread client from either Streamlit Secrets or local creds.json.
-    Automatically fixes 'Incorrect padding' errors by sanitizing the private key.
+    Robustly gets a gspread client.
+    Aggressively cleans the Private Key to fix 'Incorrect padding' errors.
     """
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     
@@ -32,9 +32,19 @@ def get_cloud_client():
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             creds_dict = dict(st.secrets["connections"]["gsheets"])
             
-            # 🚨 CRITICAL FIX: Replace literal "\n" with actual newlines
+            # 🚨 AGGRESSIVE KEY CLEANING 🚨
             if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+                raw_key = creds_dict["private_key"]
+                # 1. Remove any surrounding quotes that might have been pasted
+                raw_key = raw_key.strip('"').strip("'")
+                # 2. Replace literal "\n" (slash+n) with actual newline character
+                raw_key = raw_key.replace("\\n", "\n")
+                # 3. Ensure headers are clean
+                if "-----BEGIN PRIVATE KEY-----" not in raw_key:
+                    st.error("❌ Private Key is missing the 'BEGIN PRIVATE KEY' header.")
+                    return None
+                
+                creds_dict["private_key"] = raw_key
             
             creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
             return gspread.authorize(creds)
@@ -63,7 +73,7 @@ def load_data(force_cloud=False):
             return df
         except: pass 
 
-    # 2. Cloud Fallback (Uses robust helper now)
+    # 2. Cloud Fallback
     try:
         client = get_cloud_client()
         if not client:
@@ -71,10 +81,7 @@ def load_data(force_cloud=False):
             return pd.DataFrame()
 
         sheet = client.open(SHEET_NAME).sheet1
-        # robustly get data including headers
         df = get_as_dataframe(sheet, evaluate_formulas=True, dtype=str)
-        
-        # Clean up empty rows that gspread might fetch
         df = df.dropna(how='all')
         
         if 'timestamp' in df.columns:
@@ -309,7 +316,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.9 (Robust Auth)")
+st.title("💸 Smart Money Tracker v4.0 (Auth Fix)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
