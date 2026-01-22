@@ -7,20 +7,23 @@ import re
 from datetime import datetime, date
 from streamlit_gsheets import GSheetsConnection
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials  # 🚨 Modern Auth Library
 from gspread_dataframe import set_with_dataframe
 
 # --- CONFIGURATION ---
-CSV_PATH = "data/bets.csv"
+# Robust path handling for local dev
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH = os.path.join(BASE_DIR, "data", "bets.csv")
+CREDS_FILE = os.path.join(BASE_DIR, "creds.json")
+
 SHEET_NAME = "Smart Money Bets"
-CREDS_FILE = "creds.json"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v3.7 (Sharp Source Graph)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v3.8 (Cloud Ready)", layout="wide")
 
-# --- 1. OPTIMIZED DATA LOADING (WITH CACHING) ---
-@st.cache_data(ttl=3600)  # Cache in RAM for 1 hour or until cleared
+# --- 1. OPTIMIZED DATA LOADING ---
+@st.cache_data(ttl=3600)
 def load_data(force_cloud=False):
     # 1. Try Local CSV first (Fastest)
     if not force_cloud and os.path.exists(CSV_PATH):
@@ -32,13 +35,14 @@ def load_data(force_cloud=False):
         except Exception:
             pass 
 
-    # 2. Google Sheets Fallback
+    # 2. Google Sheets Fallback (Uses st.connection with Secrets)
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         df = conn.read(ttl=0) 
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
         
+        # Save locally for cache speedup
         os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
         df.to_csv(CSV_PATH, index=False)
         return df
@@ -46,18 +50,30 @@ def load_data(force_cloud=False):
         st.error(f"Error reading data: {e}")
         return pd.DataFrame()
 
-# --- HELPER: SAVE & CLEAR CACHE ---
+# --- HELPER: SAVE LOCAL ---
 def save_local_only(df_to_save):
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     df_to_save.to_csv(CSV_PATH, index=False)
     st.cache_data.clear() 
     st.toast("💾 Saved locally!", icon="💾")
 
-# --- HELPER: CLOUD SYNC ---
+# --- HELPER: CLOUD SYNC (SMART AUTH) ---
 def sync_to_google_sheets(df):
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
+        
+        # 🚨 SMART AUTHENTICATION LOGIC
+        # 1. Try Streamlit Secrets (Cloud)
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            creds_dict = dict(st.secrets["connections"]["gsheets"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        # 2. Fallback to Local File (Mac)
+        elif os.path.exists(CREDS_FILE):
+            creds = Credentials.from_service_account_file(CREDS_FILE, scopes=scope)
+        else:
+            st.error("❌ No credentials found! Setup secrets or creds.json.")
+            return
+
         client = gspread.authorize(creds)
         sheet = client.open(SHEET_NAME).sheet1
         sheet.clear()
@@ -230,7 +246,7 @@ def render_manual_grader(df_full):
         num_rows="fixed"
     )
 
-    if st.button("💾 Commit Grades (Save Local)", type="primary"):
+    if st.button("💾 Commit Grades (Local & Cloud)", type="primary"):
         changes_count = 0
         for index, row in edited_df.iterrows():
             original_status = df_full.at[index, 'status']
@@ -251,14 +267,22 @@ def render_manual_grader(df_full):
                     df_full.at[index, 'profit'] = 0.0
 
         if changes_count > 0:
-            save_local_only(df_full)
-            st.success(f"✅ Graded {changes_count} bets locally! Click 'Push to Cloud' when done.")
+            # 1. Save Locally (if available)
+            if os.path.exists(CSV_PATH) or os.access(os.path.dirname(CSV_PATH), os.W_OK):
+                save_local_only(df_full)
+            else:
+                st.warning("⚠️ Could not save locally (cloud mode). Syncing to Google Sheets only.")
+
+            # 2. Push to Cloud (Uses Secrets)
+            with st.spinner("Syncing changes to Google Sheets..."):
+                sync_to_google_sheets(df_full)
+                
             st.rerun()
         else:
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v3.7 (Sharp Source Graph)")
+st.title("💸 Smart Money Tracker v3.8 (Cloud Ready)")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -406,11 +430,9 @@ else:
         if closed_bets.empty:
             st.warning("No graded bets available.")
         else:
-            # --- SHARP SOURCE CHART ---
             col_chart_1, col_chart_2 = st.columns(2)
             with col_chart_1:
                 st.subheader("🦅 Sharp Source Performance")
-                # Group by Sharp Source (Top 10)
                 if 'sharp_book' in closed_bets.columns:
                     sharp_stats = closed_bets.groupby('sharp_book')['profit'].agg(agg_func).reset_index()
                     sharp_stats = sharp_stats.sort_values('profit', ascending=False).head(10)
