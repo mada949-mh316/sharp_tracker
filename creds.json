@@ -1,13 +1,1 @@
-{
-  "type": "service_account",
-  "project_id": "sharp-money-tracker",
-  "private_key_id": "5a82cd34afefa455763d5317872ca66512e3d88a",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCTGmiQpUe6CNko\ndxsaHsYj7WXBLai+yiZN1Q5TqOxEjRNwdf1ZnVUoqKy4LV4wuDQXY1f6hus7JxMs\nZbVjrzpbsg7Cy/ezRTnRHxtCEgRDvL5LjcXmIHeHoMrkdnA7IoX6vSoc8YLPhi5b\nLaa4pLDaq+U+7xPSdqj/ZVqW1uL9feINxYzlISKEbzDYBs9j0LFFcyOyhdVQdwpD\nF1GjhICDf3akwamIIyr3Wpu96sKSuY9qZRxhNLXImk2BiqCSa9rkJ7m7A81SakIm\n7M5gXebo2dvrE4+MuLnjULWoire1vvXFHDoO3ct7l2oWlXFgxqVkw/SzGSdRks6c\nxs2OShEPAgMBAAECggEABXgLYClM590xWaBH+SogurA2Qr7UUbeJQgaEQFb85bWK\n/fjdAOppAph2x2gkYtJOWXo/iJhggXP78gAcBMc8d7FAfDyCCn+t3Rj3dfbegrgv\nKPbt3xbg6sFvGZxPotsvOPm0aZwO/XEjIw+o7Z9t1ctjO/o+deokcU5O1mHJ0ZvA\niW106THEht9uz1keg/spciib+lneC+MWkwcQWXlmrj27yJ9RB8X/ZzWA8rJfipZD\nHictE/hx/HzOR4iXGy1HG5UPG9dyV+0K7l50mo4C/t7trHcl3kGPHLfka+huxW/e\nCd4I2ZlUnPf8iQT9GZbPpU2uFZvOiKin2l5Lrz/cPQKBgQDORg81FkMA+l/7nJ7A\nIfHynJBqLllYbIlh/yIt1/ZMq3Vx2hhZd2GeTkNsQ7LX/Ql+Hqqe4eKU4mSrC8Nm\npjfmAXbY5WWM0CuTFaY+fMawB/ygxkMxvJRJOSgZ7BAI1b/Mdzilid0fZqd36TLT\nZuaht6wUFdxyUKKqDYVk481T6wKBgQC2kLWf3o6EqCp0PmiL9p9KePfvKHcLfpNN\nXmueJMj44qj8MO9uGwzCl3Lk24fms4xFJ/lm8dfitKOPnfsQITjq3bw0oyB3Gvln\n8fognsIupJANqQJYGM4WYaklL+md64orfG0/+kr8bY1kH6vWY8svoqhA7pJgKg10\nrAdaUcCCbQKBgQDAosUI+uVQQILq4/WN0SW3QWfNAcQGxDX5At/UmF84cteXn+ol\ng0vzH3vv27ll5LW8xr7o6mNET7lb0/yEHK8PakangHQ58R8AmbNLoBOdyZewPff6\ntvZ0+5/rtX20AorAVIbeccXD0YaMgYgpzWuNk45so43gZFXFIiN1eRkESQKBgDzy\nrJ/VlfC1j47FMvPe/qjHH8aI1M1SkWyX5Aeksi9cxBuFXrl8cFMaanH61DDxqheA\nU+PJQ1BdC+mrTSDCZpUKN4W/G9yHddH814tCVQNrTugwjybICS0xp11R1IUzGCqS\nXIqqTZReIoDVjfGB2Vhqzg73VoiiIWHc+ItvlXw1AoGBAMI5wCcsgYPa8lTAaE1S\nB0iMGZa2thCyHaCwtLcHzxJXCIHtsKKhCG6AmlFPkMxrqR7ukOGWngfdzZDNzIC/\nVuHj6/0Ubj4lWyEZw73cS2fUxl57+2NAZWeubkxZAxvoAUsKrDzpsMrN/agqUcLQ\npi1bv7n+yFVnUEB5dfks8vl8\n-----END PRIVATE KEY-----\n",
-  "client_email": "sharpbotuser@sharp-money-tracker.iam.gserviceaccount.com",
-  "client_id": "102299839360385071306",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token",
-  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/sharpbotuser%40sharp-money-tracker.iam.gserviceaccount.com",
-  "universe_domain": "googleapis.com"
-}
+
