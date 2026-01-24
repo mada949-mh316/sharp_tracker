@@ -17,7 +17,7 @@ SHEET_NAME = "Smart Money Bets"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v4.1 (Type Fix)", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v4.2", layout="wide")
 
 # --- AUTHENTICATION HELPER ---
 def get_cloud_client():
@@ -299,7 +299,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v4.1 (Type Fix)")
+st.title("💸 Smart Money Tracker v4.2")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -397,6 +397,13 @@ else:
     all_books = sorted(df[book_col].unique()) if book_col in df.columns else []
     selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
 
+    # --- NEW: SHARP BOOK FILTER ---
+    all_sharps = []
+    if sharp_col in df.columns:
+        all_sharps = sorted(df[sharp_col].dropna().astype(str).unique())
+    selected_sharps = st.sidebar.multiselect("Filter by Sharp Source", options=all_sharps, default=all_sharps)
+    # ------------------------------
+
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
     selected_types = st.sidebar.multiselect("Filter by Bet Category", options=all_types, default=all_types)
     
@@ -408,6 +415,12 @@ else:
 
     if selected_leagues: df_filtered = df_filtered[df_filtered['league'].isin(selected_leagues)]
     if selected_books: df_filtered = df_filtered[df_filtered[book_col].isin(selected_books)]
+    
+    # --- APPLY SHARP FILTER ---
+    if selected_sharps and sharp_col in df_filtered.columns:
+        df_filtered = df_filtered[df_filtered[sharp_col].astype(str).isin(selected_sharps)]
+    # --------------------------
+
     if selected_types: df_filtered = df_filtered[df_filtered['Bet Type'].isin(selected_types)]
     if selected_props: df_filtered = df_filtered[df_filtered['Prop Type'].isin(selected_props)]
     if selected_sides: df_filtered = df_filtered[df_filtered['Bet Side'].isin(selected_sides)]
