@@ -17,7 +17,7 @@ SHEET_NAME = "Smart Money Bets"
 UNIT_SIZE = 100
 DFS_BOOKS = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
 
-st.set_page_config(page_title="Smart Money Tracker v4.2", layout="wide")
+st.set_page_config(page_title="Smart Money Tracker v4.3", layout="wide")
 
 # --- AUTHENTICATION HELPER ---
 def get_cloud_client():
@@ -77,6 +77,10 @@ def load_data(force_cloud=False):
         # Convert odds to float/int just in case
         if 'play_odds' in df.columns:
             df['play_odds'] = pd.to_numeric(df['play_odds'], errors='coerce').fillna(0)
+            
+        # Convert liquidity to float
+        if 'liquidity' in df.columns:
+            df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0)
 
     return df
 
@@ -299,7 +303,7 @@ def render_manual_grader(df_full):
             st.warning("No changes detected.")
 
 # --- MAIN UI ---
-st.title("💸 Smart Money Tracker v4.2")
+st.title("💸 Smart Money Tracker v4.3")
 
 # SIDEBAR ACTIONS
 st.sidebar.header("Data Controls")
@@ -377,6 +381,20 @@ else:
     with col_o1: min_odds_input = st.number_input("Min Odds", value=default_min, step=10)
     with col_o2: max_odds_input = st.number_input("Max Odds", value=default_max, step=10)
 
+    # 🚨 LIQUIDITY FILTER (RESTORED) 🚨
+    if 'liquidity' in df.columns:
+        st.sidebar.subheader("Filter by Liquidity")
+        col_l1, col_l2 = st.sidebar.columns(2)
+        
+        # Ensure liquidity is numeric
+        df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0)
+        
+        default_liq_min = int(df['liquidity'].min()) if not df.empty else 0
+        default_liq_max = int(df['liquidity'].max()) if not df.empty else 100000
+        
+        with col_l1: min_liq_input = st.number_input("Min Liq ($)", value=default_liq_min, step=100)
+        with col_l2: max_liq_input = st.number_input("Max Liq ($)", value=default_liq_max, step=100)
+
     fade_mode = st.sidebar.toggle("🔄 FADE MODE", value=False)
     if fade_mode:
         st.sidebar.warning("⚠️ VIEWING OPPOSITE RESULTS")
@@ -390,6 +408,10 @@ else:
         df_filtered = df_filtered[(df_filtered['timestamp'].dt.date >= date_range[0]) & (df_filtered['timestamp'].dt.date <= date_range[1])]
     
     df_filtered = df_filtered[(df_filtered['Odds Value'] >= min_odds_input) & (df_filtered['Odds Value'] <= max_odds_input)]
+    
+    # Apply Liquidity Filter
+    if 'liquidity' in df_filtered.columns:
+        df_filtered = df_filtered[(df_filtered['liquidity'] >= min_liq_input) & (df_filtered['liquidity'] <= max_liq_input)]
     
     all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
@@ -449,7 +471,7 @@ else:
 
     with tab_view:
         st.subheader("Bet History")
-        target_cols = ['timestamp', 'league', 'matchup', 'Prop Type', 'play_selection', 'market', 'Bet Side', 'play_odds', 'play_book', 'sharp_book', 'status', 'profit']
+        target_cols = ['timestamp', 'league', 'matchup', 'Prop Type', 'play_selection', 'market', 'Bet Side', 'play_odds', 'liquidity', 'play_book', 'sharp_book', 'status', 'profit']
         final_cols = [c for c in target_cols if c in df_filtered.columns]
         display_df = df_filtered[final_cols].copy()
         if 'timestamp' in display_df.columns:
