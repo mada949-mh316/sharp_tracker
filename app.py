@@ -413,10 +413,11 @@ else:
     if 'liquidity' in df_filtered.columns:
         df_filtered = df_filtered[(df_filtered['liquidity'] >= min_liq_input) & (df_filtered['liquidity'] <= max_liq_input)]
     
-    all_leagues = sorted(df['league'].unique()) if 'league' in df.columns else []
+    # 🚨 FIX: Force sorting on Strings only to avoid TypeError 🚨
+    all_leagues = sorted(df['league'].dropna().astype(str).unique()) if 'league' in df.columns else []
     selected_leagues = st.sidebar.multiselect("Filter by League", options=all_leagues, default=all_leagues)
     
-    all_books = sorted(df[book_col].unique()) if book_col in df.columns else []
+    all_books = sorted(df[book_col].dropna().astype(str).unique()) if book_col in df.columns else []
     selected_books = st.sidebar.multiselect("Filter by Sportsbook", options=all_books, default=all_books)
 
     # --- NEW: SHARP BOOK FILTER ---
@@ -429,7 +430,7 @@ else:
     all_types = ['Moneyline', 'Spread', 'Total', 'Player Prop']
     selected_types = st.sidebar.multiselect("Filter by Bet Category", options=all_types, default=all_types)
     
-    all_props = sorted(df['Prop Type'].unique())
+    all_props = sorted(df['Prop Type'].dropna().astype(str).unique())
     selected_props = st.sidebar.multiselect("Filter by Market/Prop", options=all_props, default=all_props)
     
     all_sides = ['Over', 'Under', 'Other']
