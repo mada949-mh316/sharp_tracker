@@ -32,17 +32,18 @@ PRIME_HOURS       = {6, 13, 22}
 CONSENSUS_THRESHOLD = 3
 
 # Tier display metadata
-TIER_ORDER  = ['DIAMOND', 'GOLD', 'SILVER', 'STANDARD', 'WATCH']
+TIER_ORDER  = ['DIAMOND', 'GOLD', 'SILVER', 'STANDARD_PLUS', 'STANDARD', 'WATCH']
 TIER_COLORS = {
     'DIAMOND': '#00BFFF',
     'GOLD':    '#D4AF37',
     'SILVER':  '#C0C0C0',
+    'STANDARD_PLUS': '#27AE60',   # deeper green — distinct from STANDARD
     'STANDARD':'#2ECC71',
     'WATCH':   '#95A5A6',
 }
 TIER_EMOJI = {
     'DIAMOND': '💎', 'GOLD': '🥇', 'SILVER': '🥈',
-    'STANDARD': '🔥', 'WATCH': '👁️',
+    'STANDARD_PLUS': '⭐', 'STANDARD': '🔥', 'WATCH': '👁️',
 }
 
 # Discord embed colors (hex int)
@@ -50,6 +51,7 @@ TIER_DISCORD_COLOR = {
     'DIAMOND': 0x00BFFF,
     'GOLD':    0xD4AF37,
     'SILVER':  0xC0C0C0,
+    'STANDARD_PLUS': 0x27AE60,
     'STANDARD':0x2ECC71,
     'WATCH':   0x95A5A6,
     'FADE':    0xE74C3C,
@@ -91,6 +93,9 @@ TIER_DESCRIPTIONS = {
                "liquidity, or a prime-time spot with solid market depth. 13% ROI historically.",
     'SILVER':  "Player prop Under in a profitable odds range, or a prime-time alert. "
                "Our core edge — 10.6% ROI across ~3,800 historical bets.",
+    'STANDARD_PLUS': "Selective STANDARD signal: Moneyline on NCAAB/NHL/NFL/NCAAF, or a Point Spread "
+                    "on NFL/NCAAF. These slices run +14–15% ROI historically vs −1.3% for STANDARD overall. "
+                    "Play at standard unit size.",
     'STANDARD':"Sharp money detected. Passes ROI filters but no additional edge flags. "
                "Volume play — follow at standard unit size.",
     'WATCH':   "Flagged for review: Fanatics line or odds in the 500–999 range, both historically "
@@ -101,6 +106,39 @@ TIER_DESCRIPTIONS = {
 # Odds bucket display order
 ODDS_BUCKET_ORDER = ["< -750", "-750 to -300", "-300 to -150", "-150 to +150",
                      "+150 to +300", "+300 to +750", "> +750"]
+
+
+# STANDARD_PLUS filter rules — derived from historical ROI analysis.
+# These slices run ~+14-15% ROI; rest of STANDARD runs -1.3%.
+# Moneylines on these leagues outperform regardless of sharp book.
+STANDARD_PLUS_ML_LEAGUES    = {'NCAAB', 'NHL', 'NFL', 'NCAAF'}
+# Spreads on these leagues outperform (Prophet/NoVigApp driven).
+STANDARD_PLUS_SPREAD_LEAGUES = {'NFL', 'NCAAF'}
+# Sharp books that kill Moneyline ROI — exclude these from STANDARD_PLUS ML
+# (Prophet ML = -10.4%, BetMGM play_book ML = -11.5% — handled at play_book level)
+STANDARD_PLUS_ML_BAD_SHARPS = {'Prophet'}
+# Play books that drag ML down even on good leagues
+STANDARD_PLUS_BAD_BOOKS     = {'BetMGM', 'Fliff'}
+# Odds range to skip within STANDARD_PLUS (the +300-+750 bucket is -21.5% ROI)
+STANDARD_PLUS_BAD_ODDS_MIN  = 301
+STANDARD_PLUS_BAD_ODDS_MAX  = 750
+
+
+# ─────────────────────────────────────────────────────────────
+# TEXT / STRING HELPERS
+# ─────────────────────────────────────────────────────────────
+
+def clean_text(text):
+    """Normalise text to lowercase single-spaced string for signature comparison."""
+    if not text: return ""
+    return re.sub(r'\s+', ' ', str(text).strip()).lower()
+
+def clean_matchup_string(raw_text):
+    """Strip UI noise from matchup strings scraped from the tracker page."""
+    text = re.sub(r'Open actions menu', '', raw_text, flags=re.IGNORECASE)
+    text = re.sub(r'\$\d{1,3}(,\d{3})*(\.\d+)?', '', text)
+    text = re.sub(r'(NBA|NFL|NHL|NCAAB|NCAAF|Tennis|UFC).*? at \d{1,2}:\d{2} [AP]M', '', text)
+    return text.strip()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -246,6 +284,39 @@ def evaluate_sharp_signal(sharp_book_str, bet_type, league):
 # TIER CLASSIFICATION
 # ─────────────────────────────────────────────────────────────
 
+def is_standard_plus(bet_data, bet_type, odds_val, primary_sharp):
+    """
+    Returns True if a STANDARD-tier bet falls into the historically profitable
+    STANDARD_PLUS slice (+14-15% ROI historically).
+
+    Rules derived from slicing 5,929 settled STANDARD bets:
+      • Moneyline on NCAAB/NHL/NFL/NCAAF
+          AND primary sharp is NOT Prophet (Prophet ML = -10.4%)
+          AND play_book is NOT BetMGM or Fliff
+          AND odds NOT in +301 to +750 range (-21.5% ROI there)
+      • Point Spread on NFL/NCAAF
+          AND odds NOT in +301 to +750 range
+    """
+    league    = str(bet_data.get('league', ''))
+    play_book = str(bet_data.get('play_book', '')).strip()
+
+    # Reject bad odds bucket regardless of market
+    if STANDARD_PLUS_BAD_ODDS_MIN <= odds_val <= STANDARD_PLUS_BAD_ODDS_MAX:
+        return False
+
+    if bet_type == 'Moneyline':
+        if league not in STANDARD_PLUS_ML_LEAGUES:           return False
+        if primary_sharp in STANDARD_PLUS_ML_BAD_SHARPS:     return False
+        if play_book in STANDARD_PLUS_BAD_BOOKS:              return False
+        return True
+
+    if bet_type == 'Point Spread':
+        if league not in STANDARD_PLUS_SPREAD_LEAGUES:        return False
+        return True
+
+    return False
+
+
 def classify_tier(bet_data):
     """
     Classify a bet dict (or DataFrame row) into a tier + flags dict.
@@ -284,14 +355,15 @@ def classify_tier(bet_data):
         pass
 
     flags = {
-        'is_under':      is_under,
-        'is_prop_under': is_prop_under,
-        'consensus':     consensus,
-        'good_odds':     good_odds,
-        'bad_odds':      bad_odds,
-        'good_liq':      good_liq,
-        'prime_time':    prime_time,
-        'is_fanatics':   is_fanatics,
+        'is_under':        is_under,
+        'is_prop_under':   is_prop_under,
+        'is_standard_plus': False,   # updated below if STANDARD_PLUS is assigned
+        'consensus':       consensus,
+        'good_odds':       good_odds,
+        'bad_odds':        bad_odds,
+        'good_liq':        good_liq,
+        'prime_time':      prime_time,
+        'is_fanatics':     is_fanatics,
     }
 
     if (bad_odds or is_fanatics) and consensus < CONSENSUS_THRESHOLD and not is_prop_under:
@@ -303,6 +375,17 @@ def classify_tier(bet_data):
     if prime_time    and good_liq and good_odds:                         return 'GOLD',    flags
     if is_prop_under and good_odds:                                      return 'SILVER',  flags
     if prime_time    and good_odds:                                      return 'SILVER',  flags
+    # Check if this STANDARD bet falls into a historically positive sub-slice
+    primary_sharp = [b.strip().strip('"') for b in str(bet_data.get('sharp_book', '')).split(',') if b.strip()]
+    primary_sharp = primary_sharp[0] if primary_sharp else ''
+    try:    odds_val = float(str(bet_data.get('play_odds', '0')).replace('+', '').replace('−', '-'))
+    except: odds_val = 0
+
+    if is_standard_plus(bet_data, bet_type, odds_val, primary_sharp):
+        flags['is_standard_plus'] = True
+        return 'STANDARD_PLUS', flags
+
+    flags['is_standard_plus'] = False
     return 'STANDARD', flags
 
 
@@ -346,6 +429,11 @@ def build_signal_summary(tier, flags, alert_type, is_low_confidence, is_suppress
         reasons.append("odds are in the profitable range (−150 to +499)")
 
     base = build_diamond_description(flags) if tier == 'DIAMOND' else TIER_DESCRIPTIONS.get(tier, "Sharp money detected.")
+    if tier == 'STANDARD_PLUS':
+        sl = []
+        if flags.get('bet_type') == 'Moneyline': sl.append('Moneyline')
+        if flags.get('bet_type') == 'Point Spread': sl.append('Point Spread')
+        base = TIER_DESCRIPTIONS['STANDARD_PLUS']
     why  = ("Flagged because: " + ", ".join(reasons) + ".") if reasons else ""
 
     notes = []
@@ -366,7 +454,8 @@ def build_flag_bar(flags):
     if flags.get('bad_odds'):    parts.append('⚠️ BAD ODDS')
     if flags.get('good_liq'):    parts.append('💧 GOOD LIQ')
     if flags.get('prime_time'):  parts.append('⏰ PRIME TIME')
-    if flags.get('is_fanatics'): parts.append('⚠️ FANATICS')
+    if flags.get('is_fanatics'):      parts.append('⚠️ FANATICS')
+    if flags.get('is_standard_plus'):  parts.append('⭐ STD+')
     return '  |  '.join(parts) if parts else '—'
 
 
