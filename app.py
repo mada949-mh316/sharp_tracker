@@ -91,43 +91,55 @@ section[data-testid="stSidebar"] .stSlider label { font-family: 'IBM Plex Mono',
 def _get_gspread_client():
     """
     Returns an authorised gspread client.
-    - Deployed: reads credentials from st.secrets["gcp_service_account"]
-    - Local dev: falls back to creds.json on disk
-    
-    To set up Streamlit Cloud secrets, go to your app's Settings → Secrets
-    and paste the entire contents of creds.json under [gcp_service_account].
+    Tries multiple secret key locations to handle different Streamlit secret layouts.
+    Falls back to creds.json for local dev.
     """
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-
-    # 1. Try Streamlit Secrets (deployed environment)
-    # Secrets are stored under [connections.gsheets] in Streamlit Cloud.
-    # We exclude non-credential keys like 'type' and 'universe_domain'.
     CRED_KEYS = {
         "project_id", "private_key_id", "private_key", "client_email",
         "client_id", "auth_uri", "token_uri",
         "auth_provider_x509_cert_url", "client_x509_cert_url",
     }
-    for secret_key in ("connections.gsheets", "gcp_service_account"):
-        try:
-            raw = dict(st.secrets[secret_key])
-            creds_dict = {k: v for k, v in raw.items() if k in CRED_KEYS}
-            creds_dict["type"] = "service_account"
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            return gspread.authorize(creds)
-        except KeyError:
-            continue
-        except Exception:
-            raise
 
-    # 2. Fall back to local creds.json (local dev)
+    def _build_and_auth(raw_dict):
+        creds_dict = {k: v for k, v in raw_dict.items() if k in CRED_KEYS}
+        creds_dict["type"] = "service_account"
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
+
+    # 1a. st.secrets["connections"]["gsheets"]  ← TOML nested table [connections.gsheets]
+    try:
+        return _build_and_auth(dict(st.secrets["connections"]["gsheets"]))
+    except (KeyError, AttributeError):
+        pass
+
+    # 1b. st.secrets["gcp_service_account"]  ← flat [gcp_service_account] table
+    try:
+        return _build_and_auth(dict(st.secrets["gcp_service_account"]))
+    except (KeyError, AttributeError):
+        pass
+
+    # 1c. secrets root itself has the keys directly (flat layout)
+    try:
+        if "private_key" in st.secrets:
+            return _build_and_auth(dict(st.secrets))
+    except Exception:
+        pass
+
+    # 2. Local dev fallback
     if os.path.exists(CREDS_FILE):
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
         return gspread.authorize(creds)
 
-    raise FileNotFoundError(
-        "No credentials found. Either:\n"
-        "• Add [gcp_service_account] to your Streamlit Secrets (deployed), or\n"
-        f"• Place creds.json in the project root (local dev)"
+    # Nothing worked — build a diagnostic message showing what keys ARE present
+    try:
+        top_keys = list(st.secrets.keys())
+    except Exception:
+        top_keys = ["(could not read secrets)"]
+    raise RuntimeError(
+        f"No credentials found. Top-level secret keys visible: {top_keys}\n"
+        "Expected one of: secrets['connections']['gsheets'], "
+        "secrets['gcp_service_account'], or creds.json on disk."
     )
 
 def _parse_timestamps(df):
