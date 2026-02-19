@@ -100,12 +100,24 @@ def _get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
     # 1. Try Streamlit Secrets (deployed environment)
-    try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        return gspread.authorize(creds)
-    except (KeyError, FileNotFoundError):
-        pass
+    # Secrets are stored under [connections.gsheets] in Streamlit Cloud.
+    # We exclude non-credential keys like 'type' and 'universe_domain'.
+    CRED_KEYS = {
+        "project_id", "private_key_id", "private_key", "client_email",
+        "client_id", "auth_uri", "token_uri",
+        "auth_provider_x509_cert_url", "client_x509_cert_url",
+    }
+    for secret_key in ("connections.gsheets", "gcp_service_account"):
+        try:
+            raw = dict(st.secrets[secret_key])
+            creds_dict = {k: v for k, v in raw.items() if k in CRED_KEYS}
+            creds_dict["type"] = "service_account"
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            return gspread.authorize(creds)
+        except KeyError:
+            continue
+        except Exception:
+            raise
 
     # 2. Fall back to local creds.json (local dev)
     if os.path.exists(CREDS_FILE):
