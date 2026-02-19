@@ -18,7 +18,7 @@ CSV_PATH    = "data/bets.csv"
 SHEET_NAME  = "Smart Money Bets"
 CREDS_FILE  = "creds.json"
 
-DFS_BOOKS     = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
+DFS_BOOKS     = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6', 'DraftKings6']
 VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAB', 'NCAAF', 'Tennis', 'UFC']
 
 # Tier scoring thresholds
