@@ -682,9 +682,10 @@ with tab_sharps:
                 textfont=dict(size=12),
                 showscale=True,
             ))
-            fig_cnt.update_layout(**LAYOUT, height=400,
-                                   xaxis=dict(side='bottom', gridcolor='#21262d'),
-                                   yaxis=dict(gridcolor='#21262d'))
+            hm_layout = {**LAYOUT, 'height': 400}
+            hm_layout['xaxis'] = dict(side='bottom', gridcolor='#21262d')
+            hm_layout['yaxis'] = dict(gridcolor='#21262d')
+            fig_cnt.update_layout(**hm_layout)
             st.plotly_chart(fig_cnt, use_container_width=True)
 
         with col_m2:
@@ -702,9 +703,10 @@ with tab_sharps:
                 textfont=dict(size=12),
                 showscale=True,
             ))
-            fig_roi.update_layout(**LAYOUT, height=400,
-                                   xaxis=dict(side='bottom', gridcolor='#21262d'),
-                                   yaxis=dict(gridcolor='#21262d'))
+            hm_layout = {**LAYOUT, 'height': 400}
+            hm_layout['xaxis'] = dict(side='bottom', gridcolor='#21262d')
+            hm_layout['yaxis'] = dict(gridcolor='#21262d')
+            fig_roi.update_layout(**hm_layout)
             st.plotly_chart(fig_roi, use_container_width=True)
 
         # ── Per-book solo vs consensus breakdown table ──
