@@ -3,156 +3,102 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
-import re
 import numpy as np
-from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
 
-# ─────────────────────────────────────────────────────────────
-# CONFIGURATION
-# ─────────────────────────────────────────────────────────────
-CSV_PATH    = "data/bets.csv"
-SHEET_NAME  = "Smart Money Bets"
-CREDS_FILE  = "creds.json"
-UNIT_SIZE   = 100
-DFS_BOOKS   = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6']
-VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAB', 'NCAAF', 'Tennis', 'UFC']
-
-# Tier system constants (mirrors tracker)
-GOOD_ODDS_MIN, GOOD_ODDS_MAX = -150, 499
-BAD_ODDS_MIN,  BAD_ODDS_MAX  = 500,  999
-GOOD_LIQ_MIN,  GOOD_LIQ_MAX  = 2000, 10000
-PRIME_HOURS      = {6, 13, 22}
-CONSENSUS_THRESHOLD = 3
-
-TIER_ORDER  = ['DIAMOND', 'GOLD', 'SILVER', 'STANDARD', 'WATCH']
-TIER_COLORS = {
-    'DIAMOND': '#00BFFF',
-    'GOLD':    '#D4AF37',
-    'SILVER':  '#C0C0C0',
-    'STANDARD':'#2ECC71',
-    'WATCH':   '#95A5A6',
-}
-TIER_EMOJI = {
-    'DIAMOND': '💎', 'GOLD': '🥇', 'SILVER': '🥈',
-    'STANDARD': '🔥', 'WATCH': '👁️',
-}
-
-st.set_page_config(
-    page_title="Smart Money Tracker v4",
-    layout="wide",
-    initial_sidebar_state="expanded",
+from shared_logic import (
+    # Constants
+    CSV_PATH, SHEET_NAME, CREDS_FILE, DFS_BOOKS, UNIT_SIZE,
+    TIER_ORDER, TIER_COLORS, TIER_EMOJI, ODDS_BUCKET_ORDER,
+    CONSENSUS_THRESHOLD,
+    # Functions
+    parse_odds_val, calculate_profit, calculate_arb_percent,
+    clean_raw_df, add_derived_columns,
 )
 
 # ─────────────────────────────────────────────────────────────
-# CUSTOM CSS — dark terminal aesthetic
+# PAGE CONFIG & CSS
 # ─────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Smart Money Tracker", layout="wide",
+                   initial_sidebar_state="expanded")
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600&display=swap');
-
 html, body, [class*="css"] {
     font-family: 'IBM Plex Sans', sans-serif;
-    background-color: #0d1117;
-    color: #e6edf3;
+    background-color: #0d1117; color: #e6edf3;
 }
-h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
-
-.stMetric { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 16px; }
-.stMetric label { color: #8b949e !important; font-size: 11px !important; letter-spacing: 2px; text-transform: uppercase; font-family: 'IBM Plex Mono', monospace !important; }
-.stMetric [data-testid="metric-container"] > div:nth-child(2) { font-family: 'IBM Plex Mono', monospace; font-size: 28px !important; font-weight: 700; }
-
-.tier-badge {
-    display: inline-block; padding: 3px 10px; border-radius: 4px;
-    font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700;
-    letter-spacing: 1px;
-}
-.preset-section { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-.insight-card { background: #161b22; border-left: 3px solid #58a6ff; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-size: 13px; }
-
-div[data-testid="stTab"] button { font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 1px; }
-.stDataFrame { border: 1px solid #21262d; border-radius: 8px; }
-
-/* Sidebar */
-section[data-testid="stSidebar"] { background: #0d1117; border-right: 1px solid #21262d; }
-section[data-testid="stSidebar"] .stSelectbox label,
-section[data-testid="stSidebar"] .stMultiSelect label,
-section[data-testid="stSidebar"] .stSlider label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
+h1,h2,h3 { font-family: 'IBM Plex Mono', monospace; }
+.stMetric { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:16px; }
+.stMetric label { color:#8b949e !important; font-size:11px !important; letter-spacing:2px;
+    text-transform:uppercase; font-family:'IBM Plex Mono',monospace !important; }
+.insight-card { background:#161b22; border-left:3px solid #58a6ff; border-radius:6px;
+    padding:10px 14px; margin-bottom:8px; font-size:13px; }
+div[data-testid="stTab"] button { font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:1px; }
+section[data-testid="stSidebar"] { background:#0d1117; border-right:1px solid #21262d; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────
-# DATA LOADING
+# GOOGLE SHEETS AUTH
 # ─────────────────────────────────────────────────────────────
-
 def _get_gspread_client():
-    """
-    Returns an authorised gspread client.
-    Tries multiple secret key locations to handle different Streamlit secret layouts.
-    Falls back to creds.json for local dev.
-    """
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    CRED_KEYS = {
-        "project_id", "private_key_id", "private_key", "client_email",
-        "client_id", "auth_uri", "token_uri",
-        "auth_provider_x509_cert_url", "client_x509_cert_url",
-    }
+    CRED_KEYS = {"project_id","private_key_id","private_key","client_email",
+                 "client_id","auth_uri","token_uri",
+                 "auth_provider_x509_cert_url","client_x509_cert_url"}
 
-    def _build_and_auth(raw_dict):
-        creds_dict = {k: v for k, v in raw_dict.items() if k in CRED_KEYS}
-        creds_dict["type"] = "service_account"
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        return gspread.authorize(creds)
+    def _auth(raw):
+        d = {k: v for k, v in raw.items() if k in CRED_KEYS}
+        d["type"] = "service_account"
+        return gspread.authorize(ServiceAccountCredentials.from_json_keyfile_dict(d, scope))
 
-    # 1a. st.secrets["connections"]["gsheets"]  ← TOML nested table [connections.gsheets]
+    for key in ("connections.gsheets", "gcp_service_account"):
+        try:
+            parts = key.split(".")
+            node = st.secrets
+            for p in parts:
+                node = node[p]
+            return _auth(dict(node))
+        except KeyError:
+            continue
+        except Exception:
+            raise
+
+    # Try nested: st.secrets["connections"]["gsheets"]
     try:
-        return _build_and_auth(dict(st.secrets["connections"]["gsheets"]))
+        return _auth(dict(st.secrets["connections"]["gsheets"]))
     except (KeyError, AttributeError):
         pass
 
-    # 1b. st.secrets["gcp_service_account"]  ← flat [gcp_service_account] table
-    try:
-        return _build_and_auth(dict(st.secrets["gcp_service_account"]))
-    except (KeyError, AttributeError):
-        pass
+    if "private_key" in st.secrets:
+        return _auth(dict(st.secrets))
 
-    # 1c. secrets root itself has the keys directly (flat layout)
-    try:
-        if "private_key" in st.secrets:
-            return _build_and_auth(dict(st.secrets))
-    except Exception:
-        pass
-
-    # 2. Local dev fallback
     if os.path.exists(CREDS_FILE):
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
         return gspread.authorize(creds)
 
-    # Nothing worked — build a diagnostic message showing what keys ARE present
-    try:
-        top_keys = list(st.secrets.keys())
-    except Exception:
-        top_keys = ["(could not read secrets)"]
+    try:    top_keys = list(st.secrets.keys())
+    except: top_keys = ["(unreadable)"]
     raise RuntimeError(
-        f"No credentials found. Top-level secret keys visible: {top_keys}\n"
-        "Expected one of: secrets['connections']['gsheets'], "
-        "secrets['gcp_service_account'], or creds.json on disk."
+        f"No credentials found. Secret keys visible: {top_keys}\n"
+        "Add [connections.gsheets] to Streamlit Secrets or place creds.json locally."
     )
 
+
+# ─────────────────────────────────────────────────────────────
+# DATA LOADING
+# ─────────────────────────────────────────────────────────────
 def _parse_timestamps(df):
     if "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df
 
 def fetch_from_cloud():
-    """
-    Pull latest data from Google Sheets via gspread (same auth as Push).
-    Saves local CSV cache and stores the DataFrame in session_state.
-    Returns (df, error_string_or_None).
-    """
     try:
         client  = _get_gspread_client()
         sheet   = client.open(SHEET_NAME).sheet1
@@ -167,13 +113,6 @@ def fetch_from_cloud():
         return pd.DataFrame(), str(e)
 
 def load_data():
-    """
-    Load order:
-      1. session_state  (populated by fetch_from_cloud or save_local_only)
-      2. local CSV cache
-      3. empty DataFrame — user must click Pull Cloud
-    Never hits Google Sheets automatically; that only happens on explicit Pull.
-    """
     if "df_raw" in st.session_state and not st.session_state["df_raw"].empty:
         return st.session_state["df_raw"]
     if os.path.exists(CSV_PATH):
@@ -186,12 +125,11 @@ def load_data():
             pass
     return pd.DataFrame()
 
-def save_local_only(df_to_save):
+def save_and_push(df):
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-    df_to_save.to_csv(CSV_PATH, index=False)
-    st.session_state["df_raw"] = df_to_save
-    process_data.clear()   # bust process cache so changes are visible immediately
-    st.toast("💾 Saved locally!", icon="💾")
+    df.to_csv(CSV_PATH, index=False)
+    st.session_state["df_raw"] = df
+    process_data.clear()
 
 def sync_to_google_sheets(df):
     try:
@@ -205,205 +143,27 @@ def sync_to_google_sheets(df):
 
 
 # ─────────────────────────────────────────────────────────────
-# CLASSIFICATION HELPERS  (fixed ordering — Player Prop before Total)
-# ─────────────────────────────────────────────────────────────
-def parse_odds_val(val):
-    if pd.isna(val): return 0.0
-    s = str(val).lower().replace('−', '-')
-    if 'even' in s: return 100.0
-    match = re.search(r'([-+]?\d+)', s)
-    if match:
-        try: return float(match.group(1))
-        except: return 0.0
-    return 0.0
-
-def get_decimal_odds(american_odds):
-    if pd.isna(american_odds) or american_odds == 0: return 0.0
-    if american_odds > 0: return 1 + (american_odds / 100.0)
-    return 1 + (100.0 / abs(american_odds))
-
-def categorize_bet(market, selection):
-    """Fixed: Player Prop checked before Total to avoid 'Total Points' misclassification."""
-    m, s = str(market).lower(), str(selection).lower()
-    if "moneyline" in m: return "Moneyline"
-    if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Point Spread"
-    # ✅ Player Prop BEFORE Total
-    if "player" in m or "milestone" in m or "props" in m: return "Player Prop"
-    if any(x in m for x in ["shots", "sog", "assists", "rebounds", "threes", "touchdowns"]): return "Player Prop"
-    # ✅ 'goals' and 'points' removed from keyword list to avoid Total Goals/Points misclassification
-    if "total" in m or "over/under" in m: return "Total"
-    if "to score" in s or re.search(r'\d+\+', s): return "Player Prop"
-    if "over" in s or "under" in s: return "Total"
-    return "Moneyline"
-
-def get_bet_side(selection):
-    s = str(selection).lower()
-    if re.search(r'\bover\b', s): return "Over"
-    if re.search(r'\bunder\b', s): return "Under"
-    return "Other"
-
-def extract_prop_category(market):
-    """Fixed: combined categories checked before single categories."""
-    m = str(market).lower().replace("player ", "").replace("alternate ", "").replace("alt ", "")
-    if "milestone" in m: return "Milestone"
-    # ✅ Combined categories FIRST
-    if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
-    if "points" in m and "rebounds" in m: return "Pts+Reb"
-    if "points" in m and "assists" in m: return "Pts+Ast"
-    if "rebounds" in m and "assists" in m: return "Reb+Ast"
-    if "blocks" in m and "steals" in m: return "Blk+Stl"
-    # Singles
-    if "points" in m: return "Points"
-    if "rebounds" in m: return "Rebounds"
-    if "assists" in m: return "Assists"
-    if "threes" in m or "3-point" in m or "3pt" in m: return "Threes"
-    if "blocks" in m: return "Blocks"
-    if "steals" in m: return "Steals"
-    if "turnovers" in m: return "Turnovers"
-    if "shots" in m or "sog" in m: return "Shots on Goal"
-    if "saves" in m: return "Saves"
-    if "goals" in m: return "Goals"
-    if "passing" in m: return "Passing"
-    if "rushing" in m: return "Rushing"
-    if "receiving" in m or "receptions" in m: return "Receiving"
-    if "touchdown" in m or "score" in m: return "Touchdowns"
-    if "double" in m: return "Double Double"
-    if "triple" in m: return "Triple Double"
-    return "Other"
-
-def get_odds_bucket(val):
-    if val < -750: return "< -750"
-    if -750 <= val < -300: return "-750 to -300"
-    if -300 <= val < -150: return "-300 to -150"
-    if -150 <= val <= 150:  return "-150 to +150"
-    if 150 < val <= 300:    return "+150 to +300"
-    if 300 < val <= 750:    return "+300 to +750"
-    return "> +750"
-
-ODDS_BUCKET_ORDER = ["< -750", "-750 to -300", "-300 to -150", "-150 to +150", "+150 to +300", "+300 to +750", "> +750"]
-
-def classify_tier(row):
-    """Mirrors tracker classify_tier exactly."""
-    s          = str(row.get('play_selection', '')).lower()
-    is_under   = 'under' in s
-    books      = [b.strip().strip('"') for b in str(row.get('sharp_book', '')).split(',') if b.strip()]
-    consensus  = len(books)
-    is_fanatics = 'fanatics' in str(row.get('play_book', '')).lower()
-    bet_type   = categorize_bet(row.get('market', ''), row.get('play_selection', ''))
-    is_prop_under = is_under and bet_type == 'Player Prop'
-
-    try:    odds = float(str(row.get('play_odds', '0')).replace('+', ''))
-    except: odds = 0
-    good_odds = GOOD_ODDS_MIN <= odds <= GOOD_ODDS_MAX
-    bad_odds  = BAD_ODDS_MIN  <= odds <= BAD_ODDS_MAX
-
-    try:    liq = float(row.get('liquidity', 0))
-    except: liq = 0
-    good_liq = GOOD_LIQ_MIN <= liq <= GOOD_LIQ_MAX
-
-    try:
-        dt = pd.to_datetime(str(row.get('timestamp', ''))).to_pydatetime()
-        prime_time = dt.hour in PRIME_HOURS
-    except: prime_time = False
-
-    if (bad_odds or is_fanatics) and consensus < CONSENSUS_THRESHOLD and not is_prop_under:
-        return 'WATCH'
-    if consensus >= CONSENSUS_THRESHOLD and good_odds and is_prop_under: return 'DIAMOND'
-    if consensus >= CONSENSUS_THRESHOLD and good_odds and good_liq:      return 'DIAMOND'
-    if consensus >= CONSENSUS_THRESHOLD and good_odds:                   return 'GOLD'
-    if is_prop_under and good_liq and good_odds:                         return 'GOLD'
-    if prime_time and good_liq and good_odds:                            return 'GOLD'
-    if is_prop_under and good_odds:                                      return 'SILVER'
-    if prime_time and good_odds:                                         return 'SILVER'
-    return 'STANDARD'
-
-def calculate_profit(odds_val, result):
-    try: odds = float(odds_val)
-    except: return 0.0
-    if result == "Won":
-        return UNIT_SIZE * (odds / 100.0) if odds > 0 else UNIT_SIZE * (100.0 / abs(odds))
-    elif result == "Lost":
-        return -float(UNIT_SIZE)
-    return 0.0
-
-def calculate_arb_percent(row):
-    play  = parse_odds_val(row.get('play_odds', 0))
-    sharp = parse_odds_val(row.get('sharp_odds', 0))
-    if play == 0 or sharp == 0: return 0.0
-    dp = get_decimal_odds(play); ds = get_decimal_odds(sharp)
-    if dp == 0 or ds == 0: return 0.0
-    total_imp = (1 / dp) + (1 / ds)
-    return ((1 / total_imp) - 1) * 100 if total_imp else 0.0
-
-def calculate_fade_profit(row):
-    result = row.get('result', 'Pending')
-    if result == 'Won': return -float(UNIT_SIZE)
-    if result == 'Lost':
-        odds = parse_odds_val(row.get('play_odds', 100))
-        if odds == 0: return 0.0
-        fade = odds * -1
-        return UNIT_SIZE * (fade / 100.0) if fade > 0 else UNIT_SIZE * (100.0 / abs(fade))
-    return 0.0
-
-
-# ─────────────────────────────────────────────────────────────
-# PROCESSING PIPELINE
+# PROCESSING (cached — busted on save)
 # ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def process_data(raw_df):
-    df = raw_df.copy()
-    df.columns = df.columns.str.lower().str.strip()
-
-    # Clean dirty rows
-    if 'league' in df.columns:
-        df = df[df['league'].isin(VALID_LEAGUES)]
-    if 'play_book' in df.columns:
-        df = df[~df['play_book'].isin(DFS_BOOKS)]
-        df = df[df['play_book'].notna()]
-
-    # Parse profit
-    if 'profit' in df.columns:
-        df['profit'] = pd.to_numeric(
-            df['profit'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False),
-            errors='coerce'
-        ).fillna(0.0)
-
-    # Derived columns
-    df['odds_val']       = df['play_odds'].apply(parse_odds_val)
-    df['odds_bucket']    = df['odds_val'].apply(get_odds_bucket)
-    df['bet_type']       = df.apply(lambda x: categorize_bet(x.get('market',''), x.get('play_selection','')), axis=1)
-    df['bet_side']       = df['play_selection'].apply(get_bet_side)
-    df['prop_cat']       = df.apply(lambda x: extract_prop_category(x.get('market','')) if x['bet_type'] == 'Player Prop' else '', axis=1)
-    df['tier']           = df.apply(classify_tier, axis=1)
-    df['consensus']      = df['sharp_book'].astype(str).str.split(',').str.len().fillna(1).astype(int)
-    df['primary_sharp']  = df['sharp_book'].astype(str).str.split(',').str[0].str.strip().str.strip('"')
-    df['is_prop_under']  = (df['bet_type'] == 'Player Prop') & (df['bet_side'] == 'Under')
-    df['arb_pct']        = df.apply(calculate_arb_percent, axis=1)
-
-    # Combo label for leaderboard
-    def combo(row):
-        league = str(row.get('league', ''))
-        bt = row['bet_type']
-        side = row['bet_side']
-        pc = row['prop_cat']
-        if bt == 'Player Prop': return f"{side} {league} {pc}"
-        if bt == 'Total':       return f"{side} {league} Game Total"
-        return f"{league} {bt}"
-    df['combo'] = df.apply(combo, axis=1)
-
+def process_data(raw_df_hash):
+    """Accepts a hash key so cache busts when data changes."""
+    df_raw = st.session_state.get("df_raw", pd.DataFrame())
+    if df_raw.empty:
+        return pd.DataFrame()
+    df = clean_raw_df(df_raw)
+    df = add_derived_columns(df)
     return df
 
 
 # ─────────────────────────────────────────────────────────────
-# PLOTTING HELPERS
+# PLOT HELPERS
 # ─────────────────────────────────────────────────────────────
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
-    font=dict(family='IBM Plex Mono', color='#e6edf3', size=12),
-    xaxis=dict(gridcolor='#21262d', zerolinecolor='#30363d'),
-    yaxis=dict(gridcolor='#21262d', zerolinecolor='#30363d'),
-    margin=dict(l=10, r=10, t=40, b=10),
-)
+LAYOUT = dict(paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+              font=dict(family='IBM Plex Mono', color='#e6edf3', size=12),
+              xaxis=dict(gridcolor='#21262d', zerolinecolor='#30363d'),
+              yaxis=dict(gridcolor='#21262d', zerolinecolor='#30363d'),
+              margin=dict(l=10, r=10, t=40, b=10))
 
 def roi_color(v):
     if v >= 15: return '#00ff9f'
@@ -413,275 +173,180 @@ def roi_color(v):
     if v >= -5: return '#f87171'
     return '#ef4444'
 
-def make_bar(df_plot, x, y, title="", h=300, color_by_sign=True, text_fmt=None):
-    colors = [roi_color(v) if color_by_sign else '#58a6ff' for v in df_plot[y]]
-    fig = go.Figure(go.Bar(
-        x=df_plot[x], y=df_plot[y],
-        marker_color=colors,
-        text=[f"{v:.1f}%" if text_fmt == 'roi' else f"${v:,.0f}" for v in df_plot[y]],
-        textposition='outside',
-        textfont=dict(size=11),
-    ))
+def bar(df_plot, x, y, title="", h=280, text_fmt='roi'):
+    colors = [roi_color(v) for v in df_plot[y]]
+    texts  = [f"{v:+.1f}%" if text_fmt=='roi' else f"${v:,.0f}" for v in df_plot[y]]
+    fig = go.Figure(go.Bar(x=df_plot[x], y=df_plot[y], marker_color=colors,
+                           text=texts, textposition='outside', textfont=dict(size=11)))
     fig.add_hline(y=0, line_color='#30363d', line_width=2)
-    fig.update_layout(**PLOTLY_LAYOUT, title=title, height=h)
+    fig.update_layout(**LAYOUT, title=title, height=h)
     return fig
 
-def make_hbar(df_plot, x, y, title="", h=300):
+def hbar(df_plot, x, y, title="", h=300):
     colors = [roi_color(v) for v in df_plot[x]]
-    fig = go.Figure(go.Bar(
-        x=df_plot[x], y=df_plot[y], orientation='h',
-        marker_color=colors,
-        text=[f"{v:.1f}%" for v in df_plot[x]],
-        textposition='outside',
-        textfont=dict(size=11),
-    ))
+    fig = go.Figure(go.Bar(x=df_plot[x], y=df_plot[y], orientation='h',
+                           marker_color=colors,
+                           text=[f"{v:+.1f}%" for v in df_plot[x]],
+                           textposition='outside', textfont=dict(size=11)))
     fig.add_vline(x=0, line_color='#30363d', line_width=2)
-    fig.update_layout(**PLOTLY_LAYOUT, title=title, height=h)
+    fig.update_layout(**LAYOUT, title=title, height=h)
     return fig
 
-def calc_roi_df(df, group_col, min_n=1):
-    grp = df.groupby(group_col).agg(
-        profit=('profit', 'sum'),
-        n=('profit', 'count'),
-        wins=('status', lambda x: (x == 'Won').sum()),
+def calc_roi(df, group_col, min_n=5):
+    g = df.groupby(group_col).agg(
+        profit=('profit','sum'), n=('profit','count'),
+        wins=('status', lambda x: (x=='Won').sum())
     ).reset_index()
-    grp['roi'] = (grp['profit'] / (grp['n'] * UNIT_SIZE)) * 100
-    grp['wr']  = (grp['wins'] / grp['n'].clip(lower=1)) * 100
-    return grp[grp['n'] >= min_n].sort_values('roi', ascending=False)
-
-
-# ─────────────────────────────────────────────────────────────
-# MANUAL GRADER
-# ─────────────────────────────────────────────────────────────
-def render_manual_grader(df_full):
-    st.header("📝 Bulk Manual Grader")
-    if 'status' not in df_full.columns:
-        st.error("Status column missing.")
-        return
-
-    open_mask = df_full['status'].str.lower().isin(['open', 'pending'])
-    open_bets = df_full[open_mask].copy()
-
-    if open_bets.empty:
-        st.info("No open bets to grade!")
-        return
-
-    st.info(f"⚡ {len(open_bets)} pending bets — edit statuses below, then click Commit.")
-
-    cols_to_show = ['timestamp', 'league', 'matchup', 'play_selection', 'market', 'play_odds', 'status']
-    cols_to_show = [c for c in cols_to_show if c in open_bets.columns]
-
-    edited_df = st.data_editor(
-        open_bets[cols_to_show],
-        column_config={
-            "status": st.column_config.SelectboxColumn("Status", width="medium", options=["Open", "Won", "Lost", "Push"], required=True),
-            "play_odds": st.column_config.NumberColumn("Odds", disabled=True),
-            "matchup": st.column_config.TextColumn("Matchup", disabled=True),
-            "play_selection": st.column_config.TextColumn("Selection", disabled=True),
-        },
-        hide_index=True, use_container_width=True,
-        key="grader_editor", num_rows="fixed"
-    )
-
-    if st.button("💾 Commit Grades (Save Local)", type="primary"):
-        changes = 0
-        for index, row in edited_df.iterrows():
-            if df_full.at[index, 'status'] != row['status'] and row['status'] in ['Won', 'Lost', 'Push']:
-                changes += 1
-                df_full.at[index, 'status'] = row['status']
-                df_full.at[index, 'result'] = row['status']
-                df_full.at[index, 'profit'] = round(calculate_profit(row['play_odds'], row['status']), 2)
-        if changes > 0:
-            save_local_only(df_full)
-            st.success(f"✅ Graded {changes} bets. Click 'Push to Cloud' when done.")
-            st.rerun()
-        else:
-            st.warning("No changes detected.")
+    g['roi'] = (g['profit'] / (g['n'] * UNIT_SIZE)) * 100
+    g['wr']  = g['wins'] / g['n'].clip(lower=1) * 100
+    return g[g['n'] >= min_n].sort_values('roi', ascending=False)
 
 
 # ─────────────────────────────────────────────────────────────
 # MAIN APP
 # ─────────────────────────────────────────────────────────────
-st.title("💸 Smart Money Tracker v4")
+st.title("💸 Smart Money Tracker")
 
-# ── Sidebar: Data controls ──
+# ── Sidebar: data controls ──
 st.sidebar.header("⚙️ Data Controls")
-col_r, col_s = st.sidebar.columns(2)
-with col_r:
+cr, cs = st.sidebar.columns(2)
+with cr:
     if st.button("🔄 Pull Cloud"):
-        with st.spinner("Pulling from Google Sheets..."):
+        with st.spinner("Pulling..."):
             df_pulled, err = fetch_from_cloud()
         if err:
             st.sidebar.error(f"Pull failed: {err}")
         else:
-            st.sidebar.success(f"✅ Loaded {len(df_pulled):,} rows")
+            st.sidebar.success(f"✅ {len(df_pulled):,} rows loaded")
             st.rerun()
-with col_s:
+with cs:
     if st.button("☁️ Push Cloud"):
-        df_raw = load_data()
         with st.spinner("Syncing..."):
-            sync_to_google_sheets(df_raw)
+            sync_to_google_sheets(load_data())
 
+# Load & process
 df_raw = load_data()
 if df_raw.empty:
-    st.info("No data found. Click 'Pull Cloud' to initialize.")
+    st.info("No data found. Click '🔄 Pull Cloud' to initialize.")
     st.stop()
 
-df = process_data(df_raw)
+# Use a hash of the dataframe shape+checksum as cache key
+raw_hash = str(len(df_raw)) + str(df_raw.iloc[-1].to_string() if len(df_raw) else "")
+df = process_data(raw_hash)
+if df.empty:
+    st.warning("Data loaded but processing failed. Try Pull Cloud again.")
+    st.stop()
 
-# ─────────────────────────────────────────────────────────────
-# SIDEBAR FILTERS
-# ─────────────────────────────────────────────────────────────
+# ── Sidebar: filters ──
 st.sidebar.markdown("---")
 st.sidebar.header("🎛️ Filters")
 
-# ── Quick presets ──
 st.sidebar.subheader("Quick Presets")
 preset = st.sidebar.radio("", [
-    "All Bets",
-    "NBA Props Only",
-    "3+ Consensus Only",
-    "Exclude Fanatics",
-    "Best Edges (DIAMOND + GOLD)",
-    "Prop Unders Only",
+    "All Bets", "NBA Props Only", "3+ Consensus Only",
+    "Exclude Fanatics", "Best Edges (DIAMOND + GOLD)", "Prop Unders Only",
 ], label_visibility="collapsed")
 
-# ── Date range ──
 st.sidebar.markdown("**Date Range**")
-min_date = df['timestamp'].min().date() if 'timestamp' in df.columns else datetime(2025,1,1).date()
-max_date = df['timestamp'].max().date() if 'timestamp' in df.columns else datetime.today().date()
-date_range = st.sidebar.date_input("", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+min_date = df['timestamp'].min().date()
+max_date = df['timestamp'].max().date()
+date_range = st.sidebar.date_input("", value=(min_date, max_date),
+                                    min_value=min_date, max_value=max_date)
 
-# ── Metric toggle ──
 st.sidebar.markdown("**Display Metric**")
 metric_mode = st.sidebar.radio("", ["ROI (%)", "Total Profit ($)"], label_visibility="collapsed")
-fade_mode   = st.sidebar.toggle("🔄 FADE MODE", value=False)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manual Filters")
-
-# ── Leagues ──
 all_leagues = sorted(df['league'].dropna().unique())
 sel_leagues = st.sidebar.multiselect("Leagues", all_leagues, default=all_leagues)
+sel_tiers   = st.sidebar.multiselect("Tier", TIER_ORDER, default=TIER_ORDER)
+all_sharps  = sorted(df['primary_sharp'].dropna().unique())
+sel_sharps  = st.sidebar.multiselect("Sharp Book Signal", all_sharps, default=all_sharps)
+all_books   = sorted(df['play_book'].dropna().unique())
+sel_books   = st.sidebar.multiselect("Play Book", all_books, default=all_books)
+sel_types   = st.sidebar.multiselect("Bet Type",
+    ['Moneyline','Player Prop','Point Spread','Total'],
+    default=['Moneyline','Player Prop','Point Spread','Total'])
+max_cons    = int(df['consensus'].max())
+cons_range  = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
+oc1, oc2    = st.sidebar.columns(2)
+min_odds    = oc1.number_input("Min Odds", value=int(df['odds_val'].min()), step=10)
+max_odds    = oc2.number_input("Max Odds", value=int(df['odds_val'].max()), step=10)
 
-# ── Tiers ──
-sel_tiers = st.sidebar.multiselect("Tier", TIER_ORDER, default=TIER_ORDER)
-
-# ── Sharp books ──
-all_sharps = sorted(df['primary_sharp'].dropna().unique())
-sel_sharps = st.sidebar.multiselect("Sharp Book Signal", all_sharps, default=all_sharps)
-
-# ── Play books ──
-all_books = sorted(df['play_book'].dropna().unique()) if 'play_book' in df.columns else []
-sel_books = st.sidebar.multiselect("Play Book", all_books, default=all_books)
-
-# ── Bet types ──
-sel_types = st.sidebar.multiselect("Bet Type", ['Moneyline','Player Prop','Point Spread','Total'], default=['Moneyline','Player Prop','Point Spread','Total'])
-
-# ── Consensus ──
-max_cons = int(df['consensus'].max()) if 'consensus' in df.columns else 6
-cons_range = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
-
-# ── Odds range ──
-st.sidebar.markdown("**Odds Range**")
-oc1, oc2 = st.sidebar.columns(2)
-default_min_odds = int(df['odds_val'].min()) if not df.empty else -10000
-default_max_odds = int(df['odds_val'].max()) if not df.empty else 10000
-with oc1: min_odds = st.number_input("Min", value=default_min_odds, step=10)
-with oc2: max_odds = st.number_input("Max", value=default_max_odds, step=10)
-
-# ─────────────────────────────────────────────────────────────
-# APPLY FILTERS
-# ─────────────────────────────────────────────────────────────
+# ── Apply filters ──
 df_f = df.copy()
 
-# Apply preset FIRST, then allow manual overrides on top
 if preset == "NBA Props Only":
-    df_f = df_f[(df_f['league'] == 'NBA') & (df_f['bet_type'] == 'Player Prop')]
+    df_f = df_f[(df_f['league']=='NBA') & (df_f['bet_type']=='Player Prop')]
 elif preset == "3+ Consensus Only":
     df_f = df_f[df_f['consensus'] >= 3]
 elif preset == "Exclude Fanatics":
     df_f = df_f[df_f['play_book'] != 'Fanatics']
 elif preset == "Best Edges (DIAMOND + GOLD)":
-    df_f = df_f[df_f['tier'].isin(['DIAMOND', 'GOLD'])]
+    df_f = df_f[df_f['tier'].isin(['DIAMOND','GOLD'])]
 elif preset == "Prop Unders Only":
     df_f = df_f[df_f['is_prop_under']]
 
-# Date
-if len(date_range) == 2 and 'timestamp' in df_f.columns:
-    df_f = df_f[(df_f['timestamp'].dt.date >= date_range[0]) & (df_f['timestamp'].dt.date <= date_range[1])]
+if len(date_range) == 2:
+    df_f = df_f[(df_f['timestamp'].dt.date >= date_range[0]) &
+                (df_f['timestamp'].dt.date <= date_range[1])]
 
-# Fade mode — flip profit
-if fade_mode:
-    df_f['profit'] = df_f.apply(calculate_fade_profit, axis=1)
-    st.sidebar.warning("⚠️ FADE MODE ACTIVE")
-
-# Manual filters
-if sel_leagues: df_f = df_f[df_f['league'].isin(sel_leagues)]
-if sel_tiers:   df_f = df_f[df_f['tier'].isin(sel_tiers)]
-if sel_sharps:  df_f = df_f[df_f['primary_sharp'].isin(sel_sharps)]
-if sel_books and 'play_book' in df_f.columns:
-    df_f = df_f[df_f['play_book'].isin(sel_books)]
-if sel_types:   df_f = df_f[df_f['bet_type'].isin(sel_types)]
+df_f = df_f[df_f['league'].isin(sel_leagues)]
+df_f = df_f[df_f['tier'].isin(sel_tiers)]
+df_f = df_f[df_f['primary_sharp'].isin(sel_sharps)]
+df_f = df_f[df_f['play_book'].isin(sel_books)]
+df_f = df_f[df_f['bet_type'].isin(sel_types)]
 df_f = df_f[(df_f['consensus'] >= cons_range[0]) & (df_f['consensus'] <= cons_range[1])]
 df_f = df_f[(df_f['odds_val'] >= min_odds) & (df_f['odds_val'] <= max_odds)]
 
-# Closed bets only for performance analysis
-closed = df_f[df_f['status'].isin(['Won', 'Lost', 'Push'])].copy()
+closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
-# ─────────────────────────────────────────────────────────────
-# TOP METRICS ROW
-# ─────────────────────────────────────────────────────────────
+# ── Top metrics ──
 total_profit  = closed['profit'].sum() if not closed.empty else 0
 total_wagered = len(closed) * UNIT_SIZE
 roi_overall   = (total_profit / total_wagered * 100) if total_wagered > 0 else 0
-win_rate      = (closed['status'] == 'Won').sum() / max(len(closed[closed['status'] != 'Push']), 1) * 100
-pending_n     = len(df_f[df_f['status'].isin(['Open', 'Pending'])])
+win_rate      = (closed['status']=='Won').sum() / max(len(closed[closed['status']!='Push']),1) * 100
+pending_n     = len(df_f[df_f['status'].isin(['Open','Pending'])])
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Total Bets",    f"{len(df_f):,}")
-c2.metric("Settled",       f"{len(closed):,}")
-c3.metric("Pending",       f"{pending_n:,}")
-c4.metric("Total Profit",  f"${total_profit:,.0f}", delta=f"{roi_overall:.1f}% ROI")
-c5.metric("Win Rate",      f"{win_rate:.1f}%")
-c6.metric("Active Filter", preset if preset != "All Bets" else "All Bets")
-
+c1,c2,c3,c4,c5,c6 = st.columns(6)
+c1.metric("Total Bets",   f"{len(df_f):,}")
+c2.metric("Settled",      f"{len(closed):,}")
+c3.metric("Pending",      f"{pending_n:,}")
+c4.metric("Profit",       f"${total_profit:,.0f}", delta=f"{roi_overall:.1f}% ROI")
+c5.metric("Win Rate",     f"{win_rate:.1f}%")
+c6.metric("Filter",       preset if preset != "All Bets" else "All")
 st.markdown("---")
+
 
 # ─────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────
-tab_live, tab_tier, tab_analysis, tab_props, tab_odds, tab_rolling, tab_leaderboard, tab_sim, tab_grader = st.tabs([
-    "📊 Live Log",
-    "💎 Tier Performance",
-    "📈 Deep Dive",
-    "🏀 Prop Breakdown",
-    "🎲 Odds Analysis",
-    "📉 Rolling ROI",
-    "🏆 Leaderboard",
-    "💰 Simulator",
-    "📝 Grader",
+tab_log, tab_tier, tab_analysis, tab_props, tab_odds, tab_rolling, tab_leaderboard, tab_sharps = st.tabs([
+    "📊 Live Log", "💎 Tier Performance", "📈 Deep Dive",
+    "🏀 Prop Breakdown", "🎲 Odds Analysis", "📉 Rolling ROI",
+    "🏆 Leaderboard", "🤝 Sharp Agreement",
 ])
 
-# ─── LIVE LOG ───
-with tab_live:
-    st.subheader("Bet History")
-    display_cols = ['timestamp', 'tier', 'league', 'matchup', 'bet_type', 'prop_cat', 'play_selection',
-                    'bet_side', 'play_odds', 'play_book', 'primary_sharp', 'consensus', 'status', 'profit']
-    display_cols = [c for c in display_cols if c in df_f.columns]
-    display_df = df_f[display_cols].copy().sort_values('timestamp', ascending=False)
 
-    # Color-code tier in display
+# ─── LIVE LOG ───
+with tab_log:
+    st.subheader("Bet History")
+    show_cols = ['timestamp','tier','league','matchup','bet_type','prop_cat',
+                 'play_selection','bet_side','play_odds','play_book',
+                 'primary_sharp','consensus','status','profit']
+    show_cols = [c for c in show_cols if c in df_f.columns]
     st.dataframe(
-        display_df,
+        df_f[show_cols].sort_values('timestamp', ascending=False),
         use_container_width=True,
         column_config={
-            "tier": st.column_config.TextColumn("Tier", width="small"),
-            "profit": st.column_config.NumberColumn("Profit", format="$%.2f"),
+            "profit":    st.column_config.NumberColumn("Profit",  format="$%.2f"),
+            "play_odds": st.column_config.NumberColumn("Odds",    format="%d"),
             "consensus": st.column_config.NumberColumn("# Books", width="small"),
-            "play_odds": st.column_config.NumberColumn("Odds", format="%d"),
+            "tier":      st.column_config.TextColumn("Tier",      width="small"),
         }
     )
+
 
 # ─── TIER PERFORMANCE ───
 with tab_tier:
@@ -689,350 +354,420 @@ with tab_tier:
     if closed.empty:
         st.warning("No settled bets in current filter.")
     else:
-        tier_stats = calc_roi_df(closed, 'tier', min_n=5)
+        tier_stats = calc_roi(closed, 'tier', min_n=5)
         tier_stats['tier'] = pd.Categorical(tier_stats['tier'], categories=TIER_ORDER, ordered=True)
         tier_stats = tier_stats.sort_values('tier')
 
-        # Tier summary cards
         cols_t = st.columns(len(TIER_ORDER))
         for i, tier in enumerate(TIER_ORDER):
             row = tier_stats[tier_stats['tier'] == tier]
+            em  = TIER_EMOJI.get(tier, '')
             if row.empty:
-                cols_t[i].metric(f"{TIER_EMOJI.get(tier,'')} {tier}", "N/A")
+                cols_t[i].metric(f"{em} {tier}", "N/A")
             else:
                 r = row.iloc[0]
-                cols_t[i].metric(
-                    f"{TIER_EMOJI.get(tier,'')} {tier}",
-                    f"{r['roi']:.1f}% ROI",
-                    f"N={r['n']:,} · WR {r['wr']:.0f}%"
-                )
+                cols_t[i].metric(f"{em} {tier}",
+                    f"{r['roi']:.1f}% ROI", f"N={r['n']:,} · WR {r['wr']:.0f}%")
 
         st.markdown("---")
         col_t1, col_t2 = st.columns(2)
         with col_t1:
             metric = 'roi' if metric_mode == "ROI (%)" else 'profit'
-            fig = make_bar(tier_stats, 'tier', metric, "ROI by Tier", text_fmt='roi' if metric == 'roi' else None)
-            st.plotly_chart(fig, use_container_width=True)
-
+            st.plotly_chart(bar(tier_stats, 'tier', metric, "ROI by Tier",
+                                text_fmt='roi' if metric=='roi' else 'profit'),
+                            use_container_width=True)
         with col_t2:
-            # Tier profit over time (cumulative)
             ts = closed[closed['timestamp'].notna()].sort_values('timestamp')
-            if not ts.empty:
-                tier_lines = []
-                for tier in TIER_ORDER:
-                    sub = ts[ts['tier'] == tier].copy()
-                    if len(sub) < 3: continue
-                    sub['cum_profit'] = sub['profit'].cumsum()
-                    sub['tier_label'] = tier
-                    tier_lines.append(sub[['timestamp','cum_profit','tier_label']])
-                if tier_lines:
-                    tier_ts = pd.concat(tier_lines)
-                    fig2 = px.line(tier_ts, x='timestamp', y='cum_profit', color='tier_label',
-                                   title="Cumulative Profit by Tier",
-                                   color_discrete_map=TIER_COLORS)
-                    fig2.update_layout(**PLOTLY_LAYOUT)
-                    st.plotly_chart(fig2, use_container_width=True)
+            lines = []
+            for tier in TIER_ORDER:
+                sub = ts[ts['tier']==tier].copy()
+                if len(sub) < 5: continue
+                sub['cum'] = sub['profit'].cumsum()
+                sub['lbl'] = tier
+                lines.append(sub[['timestamp','cum','lbl']])
+            if lines:
+                tdf = pd.concat(lines)
+                fig2 = px.line(tdf, x='timestamp', y='cum', color='lbl',
+                               title="Cumulative Profit by Tier",
+                               color_discrete_map=TIER_COLORS)
+                fig2.update_layout(**LAYOUT)
+                st.plotly_chart(fig2, use_container_width=True)
 
-        # Tier detail table
-        display_tier = tier_stats.copy()
-        display_tier['roi']    = display_tier['roi'].map('{:.1f}%'.format)
-        display_tier['profit'] = display_tier['profit'].map('${:,.0f}'.format)
-        display_tier['wr']     = display_tier['wr'].map('{:.1f}%'.format)
-        st.dataframe(display_tier.rename(columns={'n':'Bets','roi':'ROI','profit':'Profit','wr':'Win Rate'}),
+        # Detail table
+        disp = tier_stats.copy()
+        disp['roi']    = disp['roi'].map('{:+.1f}%'.format)
+        disp['profit'] = disp['profit'].map('${:,.0f}'.format)
+        disp['wr']     = disp['wr'].map('{:.1f}%'.format)
+        st.dataframe(disp.rename(columns={'n':'Bets','roi':'ROI','profit':'Profit','wr':'Win Rate'}),
                      use_container_width=True, hide_index=True)
 
-        # Tier validation insight box
+        # Validation insight cards
         st.markdown("---")
-        st.markdown("**📌 Tier Validation (settled bets)**")
-        for _, row in tier_stats.iterrows():
-            emoji = TIER_EMOJI.get(row['tier'], '')
-            color = TIER_COLORS.get(row['tier'], '#58a6ff')
-            sign  = '+' if row['roi'] >= 0 else ''
+        for _, r in tier_stats.iterrows():
+            em    = TIER_EMOJI.get(r['tier'], '')
+            color = TIER_COLORS.get(r['tier'], '#58a6ff')
             st.markdown(
                 f'<div class="insight-card" style="border-left-color:{color}">'
-                f'{emoji} <b>{row["tier"]}</b> — {sign}{row["roi"]:.1f}% ROI · '
-                f'{row["n"]:,} bets · {row["wr"]:.0f}% WR · ${row["profit"]:,.0f} profit'
-                f'</div>',
-                unsafe_allow_html=True
-            )
+                f'{em} <b>{r["tier"]}</b> — {r["roi"]:+.1f}% ROI · '
+                f'{r["n"]:,} bets · {r["wr"]:.0f}% WR · ${r["profit"]:,.0f}'
+                f'</div>', unsafe_allow_html=True)
+
 
 # ─── DEEP DIVE ───
 with tab_analysis:
     if closed.empty:
-        st.warning("No graded bets in current filter.")
+        st.warning("No settled bets.")
     else:
-        # Heatmap
-        if 'league' in closed.columns and 'market' in closed.columns:
-            st.subheader("🔥 League × Market Heatmap")
-            hm = closed.groupby(['league', 'bet_type'])['profit'].agg(
-                lambda x: (x.sum() / (len(x) * UNIT_SIZE)) * 100
-            ).reset_index()
-            hm.columns = ['league', 'bet_type', 'roi']
-            fig_heat = px.density_heatmap(hm, x='bet_type', y='league', z='roi',
-                                           color_continuous_scale='RdYlGn',
-                                           text_auto='.1f',
-                                           range_color=[-30, 30])
-            fig_heat.update_layout(**PLOTLY_LAYOUT)
-            st.plotly_chart(fig_heat, use_container_width=True)
+        st.subheader("🔥 League × Bet Type Heatmap")
+        hm = closed.groupby(['league','bet_type'])['profit'].agg(
+            lambda x: (x.sum()/(len(x)*UNIT_SIZE))*100
+        ).reset_index()
+        hm.columns = ['league','bet_type','roi']
+        fig_hm = px.density_heatmap(hm, x='bet_type', y='league', z='roi',
+                                     color_continuous_scale='RdYlGn',
+                                     text_auto='.1f', range_color=[-30,30])
+        fig_hm.update_layout(**LAYOUT)
+        st.plotly_chart(fig_hm, use_container_width=True)
+
+        metric = 'roi' if metric_mode == "ROI (%)" else 'profit'
+        tf = 'roi' if metric=='roi' else 'profit'
 
         col_a, col_b = st.columns(2)
         with col_a:
             st.subheader("By League")
-            lg_stats = calc_roi_df(closed, 'league', min_n=10)
-            metric = 'roi' if metric_mode == "ROI (%)" else 'profit'
-            st.plotly_chart(make_bar(lg_stats, 'league', metric, text_fmt='roi' if metric=='roi' else None), use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'league',10), 'league', metric, text_fmt=tf),
+                            use_container_width=True)
         with col_b:
             st.subheader("By Bet Type")
-            bt_stats = calc_roi_df(closed, 'bet_type', min_n=5)
-            st.plotly_chart(make_bar(bt_stats, 'bet_type', metric, text_fmt='roi' if metric=='roi' else None), use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'bet_type',5), 'bet_type', metric, text_fmt=tf),
+                            use_container_width=True)
 
         col_c, col_d = st.columns(2)
         with col_c:
             st.subheader("By Play Book")
-            bk_stats = calc_roi_df(closed, 'play_book', min_n=10)
-            st.plotly_chart(make_bar(bk_stats, 'play_book', metric, text_fmt='roi' if metric=='roi' else None), use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'play_book',10), 'play_book', metric, text_fmt=tf),
+                            use_container_width=True)
         with col_d:
             st.subheader("By Sharp Book Signal")
-            sb_stats = calc_roi_df(closed, 'primary_sharp', min_n=10)
-            st.plotly_chart(make_bar(sb_stats, 'primary_sharp', metric, text_fmt='roi' if metric=='roi' else None), use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'primary_sharp',10), 'primary_sharp', metric, text_fmt=tf),
+                            use_container_width=True)
 
-        # Consensus
         st.subheader("By Consensus Count")
-        cs_stats = calc_roi_df(closed, 'consensus', min_n=5).sort_values('consensus')
+        cs_stats = calc_roi(closed,'consensus',5).sort_values('consensus')
         cs_stats['consensus'] = cs_stats['consensus'].astype(str) + ' books'
-        st.plotly_chart(make_bar(cs_stats, 'consensus', metric, text_fmt='roi' if metric=='roi' else None, h=250), use_container_width=True)
+        st.plotly_chart(bar(cs_stats, 'consensus', metric, text_fmt=tf, h=240),
+                        use_container_width=True)
+
 
 # ─── PROP BREAKDOWN ───
 with tab_props:
+    props_closed = closed[closed['bet_type']=='Player Prop'].copy()
     st.subheader("🏀 Player Prop Analysis")
-    props_closed = closed[closed['bet_type'] == 'Player Prop'].copy()
 
     if props_closed.empty:
-        st.warning("No settled player prop bets in current filter.")
+        st.warning("No settled prop bets in current filter.")
     else:
-        # Over vs Under
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            side_stats = calc_roi_df(props_closed, 'bet_side', min_n=5)
+            side_s = calc_roi(props_closed, 'bet_side', 5)
             fig_side = go.Figure()
-            for _, row in side_stats.iterrows():
+            for _, r in side_s.iterrows():
                 fig_side.add_trace(go.Bar(
-                    x=[row['bet_side']], y=[row['roi']],
-                    marker_color=roi_color(row['roi']),
-                    text=f"{row['roi']:.1f}%<br>N={row['n']:,}<br>WR {row['wr']:.0f}%",
-                    textposition='inside',
-                    name=row['bet_side']
+                    x=[r['bet_side']], y=[r['roi']],
+                    marker_color=roi_color(r['roi']),
+                    text=f"{r['roi']:+.1f}%<br>N={r['n']:,}<br>WR {r['wr']:.0f}%",
+                    textposition='inside', name=r['bet_side']
                 ))
             fig_side.add_hline(y=0, line_color='#30363d')
-            fig_side.update_layout(**PLOTLY_LAYOUT, title="Prop Over vs Under", showlegend=False, height=300)
+            fig_side.update_layout(**LAYOUT, title="Prop Over vs Under", showlegend=False, height=300)
             st.plotly_chart(fig_side, use_container_width=True)
-
         with col_p2:
-            # Prop cat summary
-            pc_stats = calc_roi_df(props_closed, 'prop_cat', min_n=10).head(8)
-            st.plotly_chart(make_hbar(pc_stats, 'roi', 'prop_cat', "Top Prop Categories by ROI", h=300), use_container_width=True)
+            pc_s = calc_roi(props_closed, 'prop_cat', 10).head(8)
+            st.plotly_chart(hbar(pc_s, 'roi', 'prop_cat', "Top Prop Categories", h=300),
+                            use_container_width=True)
 
-        # Prop category × Side matrix
+        # Over vs Under by category
         st.subheader("Prop Category × Over/Under")
-        prop_cross = props_closed.groupby(['prop_cat', 'bet_side']).agg(
-            profit=('profit', 'sum'), n=('profit', 'count')
+        cross = props_closed.groupby(['prop_cat','bet_side']).agg(
+            profit=('profit','sum'), n=('profit','count')
         ).reset_index()
-        prop_cross['roi'] = (prop_cross['profit'] / (prop_cross['n'] * UNIT_SIZE)) * 100
-        prop_cross = prop_cross[prop_cross['n'] >= 5]
+        cross['roi'] = (cross['profit']/(cross['n']*UNIT_SIZE))*100
+        cross = cross[cross['n'] >= 5]
+        fig_x = px.bar(cross, x='prop_cat', y='roi', color='bet_side', barmode='group',
+                       color_discrete_map={'Over':'#f87171','Under':'#4ade80','Other':'#8b949e'},
+                       text_auto='.1f')
+        fig_x.add_hline(y=0, line_color='#30363d', line_width=2)
+        fig_x.update_layout(**LAYOUT, height=350, xaxis_tickangle=-30)
+        st.plotly_chart(fig_x, use_container_width=True)
 
-        fig_cross = px.bar(prop_cross, x='prop_cat', y='roi', color='bet_side',
-                           barmode='group', color_discrete_map={'Over': '#f87171', 'Under': '#4ade80', 'Other': '#8b949e'},
-                           text_auto='.1f')
-        fig_cross.add_hline(y=0, line_color='#30363d', line_width=2)
-        fig_cross.update_layout(**PLOTLY_LAYOUT, height=350, xaxis_tickangle=-30)
-        st.plotly_chart(fig_cross, use_container_width=True)
-
-        # NBA prop under category detail
+        # NBA Prop Unders detail
         st.subheader("NBA Prop Unders — Category Detail")
-        nba_under = props_closed[(props_closed['league'] == 'NBA') & (props_closed['bet_side'] == 'Under')]
-        if not nba_under.empty:
-            nba_cat = calc_roi_df(nba_under, 'prop_cat', min_n=5).sort_values('roi', ascending=False)
-            st.plotly_chart(make_hbar(nba_cat, 'roi', 'prop_cat', "NBA Under ROI by Category", h=max(300, len(nba_cat)*35)), use_container_width=True)
+        nba_u = props_closed[(props_closed['league']=='NBA') & (props_closed['bet_side']=='Under')]
+        if not nba_u.empty:
+            nba_cat = calc_roi(nba_u, 'prop_cat', 5).sort_values('roi', ascending=False)
+            st.plotly_chart(hbar(nba_cat, 'roi', 'prop_cat', "NBA Under ROI by Category",
+                                 h=max(300, len(nba_cat)*35)), use_container_width=True)
+            disp = nba_cat.copy()
+            disp['roi']    = disp['roi'].map('{:+.1f}%'.format)
+            disp['profit'] = disp['profit'].map('${:,.0f}'.format)
+            disp['wr']     = disp['wr'].map('{:.1f}%'.format)
+            st.dataframe(disp[['prop_cat','n','roi','profit','wr']].rename(
+                columns={'prop_cat':'Category','n':'Bets','roi':'ROI','profit':'Profit','wr':'WR'}),
+                use_container_width=True, hide_index=True)
 
-            # Detail table
-            display_nba = nba_cat.copy()
-            display_nba['roi']    = display_nba['roi'].map('{:.1f}%'.format)
-            display_nba['profit'] = display_nba['profit'].map('${:,.0f}'.format)
-            display_nba['wr']     = display_nba['wr'].map('{:.1f}%'.format)
-            st.dataframe(display_nba.rename(columns={'prop_cat':'Category','n':'Bets','roi':'ROI','profit':'Profit','wr':'WR'}),
-                         use_container_width=True, hide_index=True)
 
 # ─── ODDS ANALYSIS ───
 with tab_odds:
     st.subheader("🎲 Profitability by Odds Range")
     if closed.empty:
-        st.warning("No graded bets to analyze.")
+        st.warning("No settled bets.")
     else:
-        odds_stats = closed.groupby('odds_bucket').agg(
+        odds_s = closed.groupby('odds_bucket').agg(
             profit=('profit','sum'), n=('profit','count')
         ).reset_index()
-        odds_stats['roi'] = (odds_stats['profit'] / (odds_stats['n'] * UNIT_SIZE)) * 100
-        odds_stats['odds_bucket'] = pd.Categorical(odds_stats['odds_bucket'], categories=ODDS_BUCKET_ORDER, ordered=True)
-        odds_stats = odds_stats.sort_values('odds_bucket')
-
-        metric_col = 'roi' if metric_mode == "ROI (%)" else 'profit'
-        st.plotly_chart(make_bar(odds_stats, 'odds_bucket', metric_col, "Performance by Odds Range",
-                                 text_fmt='roi' if metric_col=='roi' else None, h=320), use_container_width=True)
-
-        display_odds = odds_stats.copy()
-        display_odds['roi']    = display_odds['roi'].map('{:.1f}%'.format)
-        display_odds['profit'] = display_odds['profit'].map('${:,.2f}'.format)
-        st.dataframe(display_odds.rename(columns={'odds_bucket':'Odds Range','n':'Bets','roi':'ROI','profit':'Profit'}),
+        odds_s['roi'] = (odds_s['profit']/(odds_s['n']*UNIT_SIZE))*100
+        odds_s['odds_bucket'] = pd.Categorical(odds_s['odds_bucket'],
+                                                categories=ODDS_BUCKET_ORDER, ordered=True)
+        odds_s = odds_s.sort_values('odds_bucket')
+        metric = 'roi' if metric_mode == "ROI (%)" else 'profit'
+        st.plotly_chart(bar(odds_s, 'odds_bucket', metric,
+                            text_fmt='roi' if metric=='roi' else 'profit', h=320),
+                        use_container_width=True)
+        disp = odds_s.copy()
+        disp['roi']    = disp['roi'].map('{:+.1f}%'.format)
+        disp['profit'] = disp['profit'].map('${:,.2f}'.format)
+        st.dataframe(disp.rename(columns={'odds_bucket':'Odds Range','n':'Bets',
+                                           'roi':'ROI','profit':'Profit'}),
                      use_container_width=True, hide_index=True)
+
 
 # ─── ROLLING ROI ───
 with tab_rolling:
     st.subheader("📉 Rolling ROI Trend")
     if closed.empty or 'timestamp' not in closed.columns:
-        st.warning("No data for trend analysis.")
+        st.warning("No data.")
     else:
         roll_df = closed[closed['timestamp'].notna()].sort_values('timestamp').copy()
+        cw, cb = st.columns(2)
+        window  = cw.slider("Rolling window (bets)", 10, 200, 50, step=10)
+        roll_by = cb.radio("Group by", ["All Bets", "By Tier"], horizontal=True)
 
-        col_rw, col_rb = st.columns(2)
-        with col_rw:
-            window = st.slider("Rolling window (bets)", 10, 200, 50, step=10)
-        with col_rb:
-            roll_by = st.radio("Group by", ["All Bets", "By Tier"], horizontal=True)
-
-        # Rolling ROI = rolling mean profit / unit_size * 100
         if roll_by == "All Bets":
-            roll_df['rolling_roi'] = roll_df['profit'].rolling(window, min_periods=max(5, window//4)).mean() / UNIT_SIZE * 100
+            roll_df['rolling_roi'] = (roll_df['profit']
+                .rolling(window, min_periods=max(5, window//4)).mean()
+                / UNIT_SIZE * 100)
             roll_df['cum_profit']  = roll_df['profit'].cumsum()
 
-            fig_roll = go.Figure()
-            fig_roll.add_trace(go.Scatter(
+            fig_r = go.Figure(go.Scatter(
                 x=roll_df['timestamp'], y=roll_df['rolling_roi'],
-                name=f'{window}-bet Rolling ROI', line=dict(color='#58a6ff', width=2),
-            ))
-            fig_roll.add_hline(y=0, line_color='#30363d', line_dash='dash')
-            fig_roll.update_layout(**PLOTLY_LAYOUT, title=f"{window}-Bet Rolling ROI", yaxis_title="ROI (%)", height=350)
-            st.plotly_chart(fig_roll, use_container_width=True)
+                name=f'{window}-bet Rolling ROI', line=dict(color='#58a6ff', width=2)))
+            fig_r.add_hline(y=0, line_color='#30363d', line_dash='dash')
+            fig_r.update_layout(**LAYOUT, title=f"{window}-Bet Rolling ROI",
+                                yaxis_title="ROI (%)", height=350)
+            st.plotly_chart(fig_r, use_container_width=True)
 
-            fig_cum = go.Figure(go.Scatter(
+            last_val = roll_df['cum_profit'].iloc[-1]
+            fig_c = go.Figure(go.Scatter(
                 x=roll_df['timestamp'], y=roll_df['cum_profit'],
                 fill='tozeroy',
-                line=dict(color='#4ade80' if roll_df['cum_profit'].iloc[-1] >= 0 else '#f87171', width=2),
-                fillcolor='rgba(74,222,128,0.1)',
-            ))
-            fig_cum.add_hline(y=0, line_color='#30363d')
-            fig_cum.update_layout(**PLOTLY_LAYOUT, title="Cumulative Profit", yaxis_title="$ Profit", height=300)
-            st.plotly_chart(fig_cum, use_container_width=True)
-
+                line=dict(color='#4ade80' if last_val >= 0 else '#f87171', width=2),
+                fillcolor='rgba(74,222,128,0.1)'))
+            fig_c.add_hline(y=0, line_color='#30363d')
+            fig_c.update_layout(**LAYOUT, title="Cumulative Profit", height=280)
+            st.plotly_chart(fig_c, use_container_width=True)
         else:
-            fig_tier_roll = go.Figure()
+            fig_tr = go.Figure()
             for tier in TIER_ORDER:
-                sub = roll_df[roll_df['tier'] == tier].copy()
-                if len(sub) < window // 2: continue
-                sub['rolling_roi'] = sub['profit'].rolling(window, min_periods=max(5, window//4)).mean() / UNIT_SIZE * 100
-                fig_tier_roll.add_trace(go.Scatter(
-                    x=sub['timestamp'], y=sub['rolling_roi'],
+                sub = roll_df[roll_df['tier']==tier].copy()
+                if len(sub) < window//2: continue
+                sub['rr'] = (sub['profit']
+                    .rolling(window, min_periods=max(5,window//4)).mean()
+                    / UNIT_SIZE * 100)
+                fig_tr.add_trace(go.Scatter(
+                    x=sub['timestamp'], y=sub['rr'],
                     name=f"{TIER_EMOJI.get(tier,'')} {tier}",
-                    line=dict(color=TIER_COLORS.get(tier, '#58a6ff'), width=2),
-                ))
-            fig_tier_roll.add_hline(y=0, line_color='#30363d', line_dash='dash')
-            fig_tier_roll.update_layout(**PLOTLY_LAYOUT, title=f"{window}-Bet Rolling ROI by Tier", height=400)
-            st.plotly_chart(fig_tier_roll, use_container_width=True)
+                    line=dict(color=TIER_COLORS.get(tier,'#58a6ff'), width=2)))
+            fig_tr.add_hline(y=0, line_color='#30363d', line_dash='dash')
+            fig_tr.update_layout(**LAYOUT, title=f"{window}-Bet Rolling ROI by Tier", height=400)
+            st.plotly_chart(fig_tr, use_container_width=True)
 
-        # Monthly breakdown table
+        # Monthly table
         st.subheader("Monthly Performance")
         roll_df['month'] = roll_df['timestamp'].dt.to_period('M').astype(str)
-        monthly = roll_df.groupby('month').agg(profit=('profit','sum'), n=('profit','count')).reset_index()
-        monthly['roi'] = (monthly['profit'] / (monthly['n'] * UNIT_SIZE)) * 100
-        monthly['roi_fmt']    = monthly['roi'].map('{:+.1f}%'.format)
-        monthly['profit_fmt'] = monthly['profit'].map('${:,.0f}'.format)
-        st.dataframe(monthly[['month','n','roi_fmt','profit_fmt']].rename(
+        mo = roll_df.groupby('month').agg(profit=('profit','sum'), n=('profit','count')).reset_index()
+        mo['roi'] = (mo['profit']/(mo['n']*UNIT_SIZE))*100
+        mo['roi_fmt']    = mo['roi'].map('{:+.1f}%'.format)
+        mo['profit_fmt'] = mo['profit'].map('${:,.0f}'.format)
+        st.dataframe(mo[['month','n','roi_fmt','profit_fmt']].rename(
             columns={'month':'Month','n':'Bets','roi_fmt':'ROI','profit_fmt':'Profit'}),
             use_container_width=True, hide_index=True)
+
 
 # ─── LEADERBOARD ───
 with tab_leaderboard:
     st.subheader("🏆 Most Profitable Categories")
     if closed.empty:
-        st.warning("No settled bets available.")
+        st.warning("No settled bets.")
     else:
-        col_lb1, col_lb2 = st.columns([1, 3])
-        with col_lb1:
-            min_bets = st.slider("Min Sample Size", 1, 100, 10)
-            sort_by  = st.radio("Sort by", ["ROI", "Total Profit"], index=0)
+        lb1, lb2 = st.columns([1, 3])
+        min_bets = lb1.slider("Min Sample", 1, 100, 10)
+        sort_by  = lb1.radio("Sort by", ["ROI", "Profit"])
 
         lb = closed.groupby('combo').agg(
-            profit=('profit','sum'),
-            n=('profit','count'),
-            wins=('status', lambda x: (x == 'Won').sum()),
+            profit=('profit','sum'), n=('profit','count'),
+            wins=('status', lambda x: (x=='Won').sum())
         ).reset_index()
-        lb['roi'] = (lb['profit'] / (lb['n'] * UNIT_SIZE)) * 100
-        lb['wr']  = lb['wins'] / lb['n'].clip(lower=1) * 100
-        lb = lb[lb['n'] >= min_bets]
-        lb = lb.sort_values('roi' if sort_by == 'ROI' else 'profit', ascending=False)
+        lb['roi'] = (lb['profit']/(lb['n']*UNIT_SIZE))*100
+        lb['wr']  = lb['wins']/lb['n'].clip(lower=1)*100
+        lb = lb[lb['n'] >= min_bets].sort_values(
+            'roi' if sort_by=='ROI' else 'profit', ascending=False)
 
-        col_lb2.metric("Categories shown", f"{len(lb)}")
+        lb2.metric("Categories shown", f"{len(lb)}")
+        disp = lb.copy()
+        disp['roi']    = disp['roi'].map('{:+.1f}%'.format)
+        disp['profit'] = disp['profit'].map('${:,.0f}'.format)
+        disp['wr']     = disp['wr'].map('{:.1f}%'.format)
+        st.dataframe(disp[['combo','n','roi','profit','wr']].rename(
+            columns={'combo':'Category','n':'Bets','roi':'ROI','profit':'Profit','wr':'Win Rate'}),
+            use_container_width=True, height=600, hide_index=True)
 
-        display_lb = lb.copy()
-        display_lb['roi']    = display_lb['roi'].map('{:+.1f}%'.format)
-        display_lb['profit'] = display_lb['profit'].map('${:,.0f}'.format)
-        display_lb['wr']     = display_lb['wr'].map('{:.1f}%'.format)
-        st.dataframe(
-            display_lb[['combo','n','roi','profit','wr']].rename(
-                columns={'combo':'Category','n':'Bets','roi':'ROI','profit':'Profit','wr':'Win Rate'}),
-            use_container_width=True, height=600, hide_index=True
-        )
 
-# ─── SIMULATOR ───
-with tab_sim:
-    st.subheader("💰 Bankroll Simulator")
+# ─── SHARP BOOK AGREEMENT MATRIX ───
+with tab_sharps:
+    st.subheader("🤝 Sharp Book Agreement Matrix")
+    st.caption("How often each pair of sharp books appear together in the same signal — "
+               "and whether that co-occurrence actually outperforms single-book signals.")
+
     if closed.empty:
-        st.warning("No graded bets to simulate.")
+        st.warning("No settled bets.")
     else:
-        col_s1, col_s2, col_s3 = st.columns(3)
-        start_bankroll = col_s1.number_input("Starting Bankroll ($)", value=10000, step=500)
-        pct_stake      = col_s2.slider("% Stake Strategy", 0.5, 5.0, 2.0, step=0.5) / 100.0
-        sim_tier_filter = col_s3.multiselect("Simulate Tiers", TIER_ORDER, default=TIER_ORDER)
+        ALL_BOOKS = ['Prophet','NoVigApp','Pinnacle','4cx','Polymarket','Kalshi']
 
-        sim_df = closed[closed['tier'].isin(sim_tier_filter)].sort_values('timestamp').copy()
+        # ── Build presence matrix ──
+        def has_book(sharp_str, book):
+            return book in str(sharp_str)
 
-        if sim_df.empty:
-            st.warning("No bets match simulation filter.")
-        else:
-            sim_df['flat_bankroll'] = start_bankroll + sim_df['profit'].cumsum()
+        for b in ALL_BOOKS:
+            closed[f'_has_{b}'] = closed['sharp_book'].apply(lambda x: has_book(x, b))
 
-            def get_multiplier(row):
-                if row['result'] == 'Won':
-                    odds = parse_odds_val(row['play_odds'])
-                    return (odds / 100.0) if odds > 0 else (100.0 / abs(odds))
-                elif row['result'] == 'Lost': return -1.0
-                return 0.0
+        # Co-occurrence count heatmap
+        co_count = pd.DataFrame(0, index=ALL_BOOKS, columns=ALL_BOOKS)
+        co_roi   = pd.DataFrame(np.nan, index=ALL_BOOKS, columns=ALL_BOOKS)
 
-            sim_df['multiplier']   = sim_df.apply(get_multiplier, axis=1)
-            sim_df['growth_factor'] = 1 + (pct_stake * sim_df['multiplier'])
-            sim_df['pct_bankroll']  = start_bankroll * sim_df['growth_factor'].cumprod()
+        for i, b1 in enumerate(ALL_BOOKS):
+            for j, b2 in enumerate(ALL_BOOKS):
+                if i == j:
+                    # Diagonal = bets where this is the ONLY book (solo signal)
+                    solo = closed[closed[f'_has_{b1}'] & (closed['consensus'] == 1)]
+                    co_count.loc[b1, b2] = len(solo)
+                    if len(solo) >= 5:
+                        co_roi.loc[b1, b2] = (solo['profit'].sum() / (len(solo)*UNIT_SIZE)) * 100
+                else:
+                    both = closed[closed[f'_has_{b1}'] & closed[f'_has_{b2}']]
+                    co_count.loc[b1, b2] = len(both)
+                    if len(both) >= 5:
+                        co_roi.loc[b1, b2] = (both['profit'].sum() / (len(both)*UNIT_SIZE)) * 100
 
-            fig_sim = px.line(sim_df, x='timestamp', y=['flat_bankroll', 'pct_bankroll'],
-                              title=f"Flat vs {pct_stake*100:.1f}% Compounding — {', '.join(sim_tier_filter)} tiers",
-                              labels={'value': 'Bankroll ($)', 'variable': 'Strategy'},
-                              color_discrete_map={'flat_bankroll': '#58a6ff', 'pct_bankroll': '#4ade80'})
-            fig_sim.update_layout(**PLOTLY_LAYOUT)
-            st.plotly_chart(fig_sim, use_container_width=True)
+        col_m1, col_m2 = st.columns(2)
 
-            final_flat = sim_df['flat_bankroll'].iloc[-1]
-            final_pct  = sim_df['pct_bankroll'].iloc[-1]
-            cs1, cs2, cs3 = st.columns(3)
-            cs1.metric("Final (Flat)",         f"${final_flat:,.0f}", delta=f"${final_flat-start_bankroll:,.0f}")
-            cs2.metric(f"Final ({pct_stake*100:.0f}% Compound)", f"${final_pct:,.0f}", delta=f"${final_pct-start_bankroll:,.0f}")
-            cs3.metric("Bets Simulated",        f"{len(sim_df):,}")
+        with col_m1:
+            st.markdown("**Co-occurrence Count**")
+            st.caption("Diagonal = solo signals (only that book). Off-diagonal = bets both books flagged.")
+            fig_cnt = go.Figure(go.Heatmap(
+                z=co_count.values,
+                x=ALL_BOOKS, y=ALL_BOOKS,
+                colorscale='Blues',
+                text=co_count.values.astype(int),
+                texttemplate='%{text}',
+                textfont=dict(size=12),
+                showscale=True,
+            ))
+            fig_cnt.update_layout(**LAYOUT, height=400,
+                                   xaxis=dict(side='bottom', gridcolor='#21262d'),
+                                   yaxis=dict(gridcolor='#21262d'))
+            st.plotly_chart(fig_cnt, use_container_width=True)
 
-# ─── GRADER ───
-with tab_grader:
-    render_manual_grader(df_raw)
+        with col_m2:
+            st.markdown("**ROI When Books Agree**")
+            st.caption("Diagonal = solo signal ROI. Off-diagonal = ROI when both books agree. Grey = < 5 bets.")
+            roi_display = co_roi.round(1)
+            roi_vals    = co_roi.values.astype(float)
+            fig_roi = go.Figure(go.Heatmap(
+                z=roi_vals,
+                x=ALL_BOOKS, y=ALL_BOOKS,
+                colorscale='RdYlGn',
+                zmid=0, zmin=-20, zmax=20,
+                text=roi_display.values,
+                texttemplate='%{text:.1f}%',
+                textfont=dict(size=12),
+                showscale=True,
+            ))
+            fig_roi.update_layout(**LAYOUT, height=400,
+                                   xaxis=dict(side='bottom', gridcolor='#21262d'),
+                                   yaxis=dict(gridcolor='#21262d'))
+            st.plotly_chart(fig_roi, use_container_width=True)
+
+        # ── Per-book solo vs consensus breakdown table ──
+        st.subheader("Single-Book vs Multi-Book ROI per Sharp Source")
+
+        rows = []
+        for b in ALL_BOOKS:
+            has = closed[closed[f'_has_{b}']]
+            solo  = has[has['consensus'] == 1]
+            multi = has[has['consensus'] >= 2]
+            three = has[has['consensus'] >= 3]
+
+            def _roi(g): return (g['profit'].sum()/(len(g)*UNIT_SIZE)*100) if len(g) >= 5 else None
+
+            rows.append({
+                'Sharp Book':   b,
+                'All Bets N':   len(has),
+                'All ROI':      f"{_roi(has):+.1f}%" if _roi(has) is not None else '—',
+                'Solo N':       len(solo),
+                'Solo ROI':     f"{_roi(solo):+.1f}%" if _roi(solo) is not None else '—',
+                '2+ Books N':   len(multi),
+                '2+ ROI':       f"{_roi(multi):+.1f}%" if _roi(multi) is not None else '—',
+                '3+ Books N':   len(three),
+                '3+ ROI':       f"{_roi(three):+.1f}%" if _roi(three) is not None else '—',
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # ── Insight: which book pairs are most independent? ──
+        st.subheader("Most Independent Book Pairs")
+        st.caption("Pairs that rarely agree — their co-signals may carry more weight as genuine independent confirmation.")
+
+        pairs = []
+        for i, b1 in enumerate(ALL_BOOKS):
+            for j, b2 in enumerate(ALL_BOOKS):
+                if j <= i: continue
+                n1   = closed[f'_has_{b1}'].sum()
+                n2   = closed[f'_has_{b2}'].sum()
+                both = int(co_count.loc[b1, b2])
+                if n1 < 20 or n2 < 20: continue
+                overlap_pct = both / min(n1, n2) * 100 if min(n1,n2) > 0 else 0
+                roi_val = co_roi.loc[b1, b2]
+                pairs.append({
+                    'Books': f"{b1} + {b2}",
+                    'Co-signals': both,
+                    'Overlap %': f"{overlap_pct:.1f}%",
+                    'Co-signal ROI': f"{roi_val:+.1f}%" if not np.isnan(roi_val) else '—',
+                })
+        if pairs:
+            pairs_df = pd.DataFrame(pairs).sort_values('Co-signals')
+            st.dataframe(pairs_df, use_container_width=True, hide_index=True)
+
+    # Clean up temp columns
+    for b in ALL_BOOKS:
+        col = f'_has_{b}'
+        if col in closed.columns:
+            closed.drop(columns=[col], inplace=True)
+
 
 # ─── DEBUG ───
 with st.expander("🛠️ Debug"):
-    st.write("Processed data shape:", df.shape)
-    st.write("Filtered shape:", df_f.shape)
-    st.write("Closed bets:", len(closed))
+    st.write("Raw rows:", len(df_raw))
+    st.write("Processed rows:", len(df))
+    st.write("Filtered rows:", len(df_f))
+    st.write("Settled rows:", len(closed))
     st.write("Tier distribution:", df_f['tier'].value_counts().to_dict())
-    st.write("Primary sharp distribution:", df_f['primary_sharp'].value_counts().to_dict())
+    st.write("Sharp book distribution:", df_f['primary_sharp'].value_counts().to_dict())
