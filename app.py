@@ -89,10 +89,34 @@ section[data-testid="stSidebar"] .stSlider label { font-family: 'IBM Plex Mono',
 # ─────────────────────────────────────────────────────────────
 
 def _get_gspread_client():
-    """Returns an authorised gspread client using creds.json."""
+    """
+    Returns an authorised gspread client.
+    - Deployed: reads credentials from st.secrets["gcp_service_account"]
+    - Local dev: falls back to creds.json on disk
+    
+    To set up Streamlit Cloud secrets, go to your app's Settings → Secrets
+    and paste the entire contents of creds.json under [gcp_service_account].
+    """
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
-    return gspread.authorize(creds)
+
+    # 1. Try Streamlit Secrets (deployed environment)
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
+    except (KeyError, FileNotFoundError):
+        pass
+
+    # 2. Fall back to local creds.json (local dev)
+    if os.path.exists(CREDS_FILE):
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
+        return gspread.authorize(creds)
+
+    raise FileNotFoundError(
+        "No credentials found. Either:\n"
+        "• Add [gcp_service_account] to your Streamlit Secrets (deployed), or\n"
+        f"• Place creds.json in the project root (local dev)"
+    )
 
 def _parse_timestamps(df):
     if "timestamp" in df.columns:
