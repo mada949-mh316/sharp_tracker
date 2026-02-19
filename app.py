@@ -6,7 +6,6 @@ import os
 import re
 import numpy as np
 from datetime import datetime, timedelta
-from streamlit_gsheets import GSheetsConnection
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
@@ -88,40 +87,68 @@ section[data-testid="stSidebar"] .stSlider label { font-family: 'IBM Plex Mono',
 # ─────────────────────────────────────────────────────────────
 # DATA LOADING
 # ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def load_data(force_cloud=False):
-    if not force_cloud and os.path.exists(CSV_PATH):
+
+def _get_gspread_client():
+    """Returns an authorised gspread client using creds.json."""
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
+    return gspread.authorize(creds)
+
+def _parse_timestamps(df):
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    return df
+
+def fetch_from_cloud():
+    """
+    Pull latest data from Google Sheets via gspread (same auth as Push).
+    Saves local CSV cache and stores the DataFrame in session_state.
+    Returns (df, error_string_or_None).
+    """
+    try:
+        client  = _get_gspread_client()
+        sheet   = client.open(SHEET_NAME).sheet1
+        records = sheet.get_all_records()
+        df = pd.DataFrame(records)
+        df = _parse_timestamps(df)
+        os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+        df.to_csv(CSV_PATH, index=False)
+        st.session_state["df_raw"] = df
+        return df, None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+def load_data():
+    """
+    Load order:
+      1. session_state  (populated by fetch_from_cloud or save_local_only)
+      2. local CSV cache
+      3. empty DataFrame — user must click Pull Cloud
+    Never hits Google Sheets automatically; that only happens on explicit Pull.
+    """
+    if "df_raw" in st.session_state and not st.session_state["df_raw"].empty:
+        return st.session_state["df_raw"]
+    if os.path.exists(CSV_PATH):
         try:
             df = pd.read_csv(CSV_PATH)
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = _parse_timestamps(df)
+            st.session_state["df_raw"] = df
             return df
         except Exception:
             pass
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        df = conn.read(ttl=0)
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-        os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-        df.to_csv(CSV_PATH, index=False)
-        return df
-    except Exception as e:
-        st.error(f"Error reading data: {e}")
-        return pd.DataFrame()
+    return pd.DataFrame()
 
 def save_local_only(df_to_save):
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     df_to_save.to_csv(CSV_PATH, index=False)
-    st.cache_data.clear()
+    st.session_state["df_raw"] = df_to_save
+    process_data.clear()   # bust process cache so changes are visible immediately
     st.toast("💾 Saved locally!", icon="💾")
 
 def sync_to_google_sheets(df):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open(SHEET_NAME).sheet1
+        client = _get_gspread_client()
+        sheet  = client.open(SHEET_NAME).sheet1
         sheet.clear()
         set_with_dataframe(sheet, df)
         st.toast("☁️ Synced to Google Sheets!", icon="✅")
@@ -434,9 +461,13 @@ st.sidebar.header("⚙️ Data Controls")
 col_r, col_s = st.sidebar.columns(2)
 with col_r:
     if st.button("🔄 Pull Cloud"):
-        st.cache_data.clear()
-        load_data(force_cloud=True)
-        st.rerun()
+        with st.spinner("Pulling from Google Sheets..."):
+            df_pulled, err = fetch_from_cloud()
+        if err:
+            st.sidebar.error(f"Pull failed: {err}")
+        else:
+            st.sidebar.success(f"✅ Loaded {len(df_pulled):,} rows")
+            st.rerun()
 with col_s:
     if st.button("☁️ Push Cloud"):
         df_raw = load_data()
