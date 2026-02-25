@@ -61,7 +61,7 @@ def get_pool():
     global _pool
     if _pool is None:
         url = _get_database_url()
-        _pool = ThreadedConnectionPool(1, 5, url, sslmode='require')
+        _pool = ThreadedConnectionPool(1, 5, url, sslmode='disable')
     return _pool
 
 
