@@ -4,3 +4,5 @@ plotly
 numpy
 st-gsheets-connection
 oauth2client
+psycopg2-binary
+gspread-dataframe
