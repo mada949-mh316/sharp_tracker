@@ -61,7 +61,7 @@ def get_pool():
     global _pool
     if _pool is None:
         url = _get_database_url()
-        _pool = ThreadedConnectionPool(1, 5, url, sslmode='disable')
+        _pool = ThreadedConnectionPool(1, 5, url, sslmode='require')
     return _pool
 
 
@@ -88,7 +88,7 @@ INSERT_SQL = """
     INSERT INTO bets (
         id, timestamp, league, matchup, market, play_selection,
         play_odds, play_book, sharp_odds, sharp_book,
-        liquidity, wager, result, profit, status
+        liquidity, wager, result, profit, status, edge_score, gem_score
     )
     VALUES %s
     ON CONFLICT ON CONSTRAINT bets_natural_key DO NOTHING
@@ -113,6 +113,16 @@ def insert_bets(bets_list: list):
             except ValueError:
                 ts = pd.to_datetime(ts, errors='coerce')
 
+        edge_score = b.get('edge_score', None)
+        if edge_score is not None:
+            try: edge_score = float(edge_score)
+            except: edge_score = None
+
+        gem_score_val = b.get('gem_score', None)
+        if gem_score_val is not None:
+            try: gem_score_val = float(gem_score_val)
+            except: gem_score_val = None
+
         rows.append((
             str(b.get('id', '')),
             ts,
@@ -129,6 +139,8 @@ def insert_bets(bets_list: list):
             str(b.get('result', 'Pending')),
             float(b.get('profit', 0) or 0),
             str(b.get('status', 'Open')),
+            edge_score,
+            gem_score_val,
         ))
 
     with get_conn() as conn:
@@ -199,7 +211,8 @@ def load_bets(
     sql = f"""
         SELECT id, timestamp, league, matchup, market, play_selection,
                play_odds, play_book, sharp_odds, sharp_book,
-               liquidity, wager, result, profit, status
+               liquidity, wager, result, profit, status,
+               edge_score, gem_score
         FROM bets
         WHERE {where}
         {order}
@@ -218,7 +231,8 @@ def load_bets_date_range(start_date, end_date) -> pd.DataFrame:
     sql = """
         SELECT id, timestamp, league, matchup, market, play_selection,
                play_odds, play_book, sharp_odds, sharp_book,
-               liquidity, wager, result, profit, status
+               liquidity, wager, result, profit, status,
+               edge_score, gem_score
         FROM bets
         WHERE timestamp >= %s AND timestamp < %s
         ORDER BY timestamp DESC
