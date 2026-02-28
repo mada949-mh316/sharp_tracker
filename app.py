@@ -111,10 +111,10 @@ def calc_roi(df, group_col, min_n=5):
 
 MY_SCORE_BUCKETS = [
     (0,  20,  'AVOID', '#ef4444'),
-    (20, 45,  'WEAK',  '#f59e0b'),
-    (45, 65,  'FAIR',  '#4ade80'),
-    (65, 80,  'GOOD',  '#00ff9f'),
-    (80, 101, 'HIGH',  '#00ffcc'),
+    (20, 35,  'WATCH', '#f59e0b'),
+    (35, 55,  'FAIR',  '#4ade80'),
+    (55, 70,  'GOOD',  '#00ff9f'),
+    (70, 101, 'HIGH',  '#00ffcc'),
 ]
 GEM_SCORE_BUCKETS = [
     (0,  52, 'SKIP',      '#ef4444'),
