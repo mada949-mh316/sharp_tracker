@@ -391,7 +391,56 @@ with tab_analysis:
             fig_hr.update_xaxes(categoryorder='array', categoryarray=hr_stats['hour_lbl'])
             st.plotly_chart(fig_hr, use_container_width=True)
 
-
+# ─── LIQUIDITY ANALYSIS ──────────────────────────────────────
+        st.markdown("---")
+        st.subheader("💧 Liquidity Sweet Spot")
+        st.caption("Find the exact market depth where your edge is strongest. Too low = noisy limits. Too high = perfectly efficient markets.")
+        
+        # Filter out missing/zero liquidity for a clean chart
+        liq_df = closed[(closed['liquidity'] > 0) & (closed['liquidity'].notna())].copy()
+        
+        if not liq_df.empty:
+            col_l1, col_l2 = st.columns(2)
+            
+            with col_l1:
+                # Scatter Plot
+                fig_liq = px.scatter(
+                    liq_df, 
+                    x='liquidity', 
+                    y='profit', 
+                    color='tier',
+                    color_discrete_map=TIER_COLORS,
+                    opacity=0.65,
+                    hover_data={'league': True, 'bet_type': True, 'play_selection': True, 'odds_val': True},
+                    title="Every Bet: Profit vs. Liquidity"
+                )
+                fig_liq.add_hline(y=0, line_color='#30363d', line_width=2)
+                fig_liq.update_layout(**LAYOUT, height=350, xaxis_title="Market Liquidity ($)", yaxis_title="Profit ($)")
+                st.plotly_chart(fig_liq, use_container_width=True)
+            
+            with col_l2:
+                # Bucketed Bar Chart
+                liq_df['liq_bucket'] = pd.cut(
+                    liq_df['liquidity'], 
+                    bins=[0, 1000, 2500, 5000, 10000, 100000], 
+                    labels=['Under $1k', '$1k - $2.5k', '$2.5k - $5k', '$5k - $10k', '$10k+']
+                )
+                liq_stats = calc_roi(liq_df, 'liq_bucket', 5)
+                # Ensure the buckets display in order
+                liq_stats['liq_bucket'] = pd.Categorical(
+                    liq_stats['liq_bucket'], 
+                    categories=['Under $1k', '$1k - $2.5k', '$2.5k - $5k', '$5k - $10k', '$10k+'], 
+                    ordered=True
+                )
+                liq_stats = liq_stats.sort_values('liq_bucket')
+                
+                metric_to_plot = 'roi' if metric_mode == "ROI (%)" else 'profit'
+                text_format = 'roi' if metric_to_plot == 'roi' else 'profit'
+                
+                fig_liq_bar = bar(liq_stats, 'liq_bucket', metric_to_plot, title="ROI by Liquidity Bucket", text_fmt=text_format, h=350)
+                st.plotly_chart(fig_liq_bar, use_container_width=True)
+        else:
+            st.info("No liquidity data available for settled bets.")
 # ─── PROP BREAKDOWN ──────────────────────────────────────────
 with tab_props:
     props_closed = closed[closed['bet_type']=='Player Prop'].copy()
