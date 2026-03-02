@@ -364,6 +364,7 @@ with tab_analysis:
         with col_b:
             st.subheader("By Bet Type")
             st.plotly_chart(bar(calc_roi(closed,'bet_type',5),'bet_type',metric,text_fmt=tf),use_container_width=True)
+        
         col_c,col_d = st.columns(2)
         with col_c:
             st.subheader("By Play Book")
@@ -371,10 +372,24 @@ with tab_analysis:
         with col_d:
             st.subheader("By Sharp Book Signal")
             st.plotly_chart(bar(calc_roi(closed,'primary_sharp',10),'primary_sharp',metric,text_fmt=tf),use_container_width=True)
+        
         st.subheader("By Consensus Count")
         cs_stats = calc_roi(closed,'consensus',5).sort_values('consensus')
         cs_stats['consensus'] = cs_stats['consensus'].astype(str)+' books'
         st.plotly_chart(bar(cs_stats,'consensus',metric,text_fmt=tf,h=240),use_container_width=True)
+
+        # NEW TIME OF DAY CHART
+        st.subheader("By Time of Day (Hour)")
+        closed_hr = closed.copy()
+        if 'timestamp' in closed_hr.columns:
+            closed_hr['hour'] = closed_hr['timestamp'].dt.hour
+            hr_stats = calc_roi(closed_hr, 'hour', 5).sort_values('hour') # sort chronologically 0-23
+            hr_stats['hour_lbl'] = hr_stats['hour'].apply(lambda h: f"{h%12 or 12} {'AM' if h < 12 else 'PM'}")
+            
+            fig_hr = bar(hr_stats, 'hour_lbl', metric, text_fmt=tf, h=280)
+            # Ensure the x-axis stays chronological, not sorted by size
+            fig_hr.update_xaxes(categoryorder='array', categoryarray=hr_stats['hour_lbl'])
+            st.plotly_chart(fig_hr, use_container_width=True)
 
 
 # ─── PROP BREAKDOWN ──────────────────────────────────────────
