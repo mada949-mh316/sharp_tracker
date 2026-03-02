@@ -199,6 +199,15 @@ oc1, oc2   = st.sidebar.columns(2)
 min_odds   = oc1.number_input("Min Odds", value=int(df['odds_val'].min()), step=10)
 max_odds   = oc2.number_input("Max Odds", value=int(df['odds_val'].max()), step=10)
 
+HAS_MY_SCORE_SIDEBAR = 'edge_score' in df.columns and df['edge_score'].notna().sum() > 0
+if HAS_MY_SCORE_SIDEBAR:
+    st.sidebar.markdown("**Edge Score Range**")
+    ec1, ec2 = st.sidebar.columns(2)
+    min_edge = ec1.number_input("Min", value=0, min_value=0, max_value=100, step=1, key="min_edge")
+    max_edge = ec2.number_input("Max", value=100, min_value=0, max_value=100, step=1, key="max_edge")
+else:
+    min_edge, max_edge = 0, 100
+
 # ── Apply filters ──
 df_f = df.copy()
 if preset == "NBA Props Only":         df_f = df_f[(df_f['league']=='NBA')&(df_f['bet_type']=='Player Prop')]
@@ -215,6 +224,8 @@ df_f = df_f[df_f['play_book'].isin(sel_books)]
 df_f = df_f[df_f['bet_type'].isin(sel_types)]
 df_f = df_f[(df_f['consensus']>=cons_range[0])&(df_f['consensus']<=cons_range[1])]
 df_f = df_f[(df_f['odds_val']>=min_odds)&(df_f['odds_val']<=max_odds)]
+if HAS_MY_SCORE_SIDEBAR and (min_edge > 0 or max_edge < 100):
+    df_f = df_f[df_f['edge_score'].notna() & (df_f['edge_score'] >= min_edge) & (df_f['edge_score'] <= max_edge)]
 
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
@@ -669,14 +680,13 @@ with tab_edge:
         wkg = time_df.dropna(subset=['gem_score']).groupby('week')['gem_score'].agg(['mean','count']).reset_index()
         wkg.columns=['week','avg','n']
         wkg = wkg[wkg['n']>=5]
-        wkg['avg_norm'] = wkg['avg'] / 70 * 100   # normalise 0-70 → 0-100 for same axis
+        wkg['avg_norm'] = wkg['avg'] / 70 * 100
         fig_time.add_trace(go.Scatter(x=wkg['week'],y=wkg['avg_norm'],name='Gem Score (norm. to 100)',
             line=dict(color='#f59e0b',width=2),mode='lines+markers'))
     fig_time.update_layout(**LAYOUT,title="Weekly Average Score",height=300,
                             yaxis_title="Score (both on 0-100 scale)",xaxis_tickangle=-30)
     st.plotly_chart(fig_time, use_container_width=True)
 
-    # Histograms
     hist_c1, hist_c2 = st.columns(2)
     with hist_c1:
         if HAS_MY_SCORE:
@@ -706,7 +716,6 @@ with tab_edge:
     st.caption("Which combos score highest AND deliver real ROI? Color = actual ROI, bar length = avg score.")
 
     if HAS_MY_SCORE and not settled_e.empty:
-        # Build the bet_side column if it doesn't exist
         if 'bet_side' not in settled_e.columns:
             settled_e['bet_side'] = 'Other'
         settled_e['bms_key'] = (settled_e['play_book'].fillna('')+' · '+
@@ -758,7 +767,6 @@ with tab_edge:
         both = settled_e.dropna(subset=['edge_score','gem_score']).copy()
 
         if len(both) >= 20:
-            # Scatter
             sample = both.sample(min(2000,len(both)),random_state=42)
             fig_sc = px.scatter(sample, x='edge_score', y='gem_score', color='status',
                 color_discrete_map={'Won':'#4ade80','Lost':'#f87171'},
@@ -771,7 +779,6 @@ with tab_edge:
             fig_sc.update_layout(**LAYOUT, height=400)
             st.plotly_chart(fig_sc, use_container_width=True)
 
-            # Quadrant analysis
             st.markdown("**Quadrant ROI — When Both Models Agree**")
             MY_T, GEM_T = 45, 54
             both_good = both[(both['edge_score']>=MY_T)&(both['gem_score']>=GEM_T)]
@@ -791,7 +798,6 @@ with tab_edge:
             quad_metric("❌ Both Skip",      both_skip, q4)
             st.caption("Use full unit size when both models agree — that's your highest-conviction filter.")
 
-            # Cumulative profit by filter strategy
             st.markdown("**Cumulative Profit: Which Filter Wins?**")
             ts = both.sort_values('timestamp').copy()
             ts['pnl_both'] = ts.apply(lambda r: r['profit'] if (r['edge_score']>=MY_T and r['gem_score']>=GEM_T) else 0, axis=1).cumsum()
