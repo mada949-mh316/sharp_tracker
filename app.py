@@ -52,13 +52,15 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
     df = clean_raw_df(raw)
     df = add_derived_columns(df)
     
-    # ── TYPE SAFETY FIX ──
-    # Force profit and liquidity to standard Python floats so Postgres Decimal 
-    # objects don't cause TypeErrors during division/multiplication later.
+    # ── MASSIVE TYPE SAFETY FIX ──
+    # 1. Destroy duplicate columns if a backend join accidentally created two 'profit' columns
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    
+    # 2. Force profit and liquidity to standard 1D Python floats to stop math crashes
     if 'profit' in df.columns:
-        df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0)
+        df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0).astype(float)
     if 'liquidity' in df.columns:
-        df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0)
+        df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0).astype(float)
         
     return df
 
@@ -691,7 +693,7 @@ with tab_edge:
     settled_e = closed.copy()
     
     # TYPE SAFETY FIX
-    base_prof = float(settled_e['profit'].sum())
+    base_prof = float(pd.to_numeric(settled_e['profit'], errors='coerce').fillna(0.0).sum())
     base_wager = max(len(settled_e) * float(UNIT_SIZE), 1)
     baseline_roi = (base_prof / base_wager) * 100
 
@@ -803,7 +805,7 @@ with tab_edge:
         bms_min = st.slider("Min bets per combo", 5, 50, 10, key='bms_min')
         combo_s = settled_e.groupby('bms_key').agg(
             avg_score=('edge_score','mean'),
-            roi=('profit',lambda x: float(x.sum())/(len(x)*float(UNIT_SIZE))*100), # TYPE SAFETY FIX
+            roi=('profit',lambda x: float(pd.to_numeric(x, errors='coerce').fillna(0.0).sum())/(len(x)*float(UNIT_SIZE))*100), # TYPE SAFETY FIX
             n=('profit','count'),
             wr=('status',lambda x: (x=='Won').sum()/max(len(x),1)*100),
         ).reset_index()
@@ -874,10 +876,10 @@ with tab_edge:
                     col.metric(label,"N/A",f"N={len(sub)}")
                     return
                 
-                # TYPE SAFETY FIX: Explicit Python float casting stops Postgres object collisions
-                prof_sum = float(sub['profit'].sum())
+                # TYPE SAFETY FIX
+                prof_sum = pd.to_numeric(sub['profit'], errors='coerce').fillna(0.0).sum()
                 u_size = float(UNIT_SIZE)
-                r = (prof_sum / (len(sub) * u_size)) * 100
+                r = (float(prof_sum) / (len(sub) * u_size)) * 100
                 
                 col.metric(label,f"{r:+.1f}% ROI",f"N={len(sub):,} bets")
 
@@ -890,10 +892,12 @@ with tab_edge:
             st.markdown("**Cumulative Profit: Which Filter Wins?**")
             ts = both.sort_values('timestamp').copy()
             # TYPE SAFETY FIX
-            ts['pnl_both'] = ts.apply(lambda r: float(r['profit']) if (r['edge_score']>=MY_T and r['gem_score']>=GEM_T) else 0.0, axis=1).cumsum()
-            ts['pnl_my']   = ts.apply(lambda r: float(r['profit']) if r['edge_score']>=MY_T else 0.0, axis=1).cumsum()
-            ts['pnl_gem']  = ts.apply(lambda r: float(r['profit']) if r['gem_score']>=GEM_T else 0.0, axis=1).cumsum()
-            ts['pnl_all']  = ts['profit'].astype(float).cumsum()
+            ts['safe_profit'] = pd.to_numeric(ts['profit'], errors='coerce').fillna(0.0).astype(float)
+            
+            ts['pnl_both'] = ts.apply(lambda r: float(r['safe_profit']) if (r['edge_score']>=MY_T and r['gem_score']>=GEM_T) else 0.0, axis=1).cumsum()
+            ts['pnl_my']   = ts.apply(lambda r: float(r['safe_profit']) if r['edge_score']>=MY_T else 0.0, axis=1).cumsum()
+            ts['pnl_gem']  = ts.apply(lambda r: float(r['safe_profit']) if r['gem_score']>=GEM_T else 0.0, axis=1).cumsum()
+            ts['pnl_all']  = ts['safe_profit'].cumsum()
 
             fig_cum = go.Figure()
             fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_both'],name='✅ Both agree',
