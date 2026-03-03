@@ -883,15 +883,6 @@ with tab_edge:
                     return
                 r = (sub['profit'].sum() / (len(sub) * float(UNIT_SIZE))) * 100
                 col.metric(label, f"{r:+.1f}% ROI", f"N={len(sub):,} bets")
-                
-                # EXTREME TYPE SAFETY
-                prof_data = sub['profit'].iloc[:, 0] if isinstance(sub['profit'], pd.DataFrame) else sub['profit']
-                prof_sum = pd.to_numeric(prof_data, errors='coerce').fillna(0.0).sum()
-                u_size = float(UNIT_SIZE)
-                r = (float(prof_sum) / (len(sub) * u_size)) * 100
-                
-                col.metric(label,f"{r:+.1f}% ROI",f"N={len(sub):,} bets")
-
             quad_metric("✅ Both Like It",   both_good, q1)
             quad_metric("📊 My Score Only",  my_only,   q2)
             quad_metric("💎 Gem Only",       gem_only,  q3)
