@@ -876,9 +876,12 @@ with tab_edge:
 
             q1,q2,q3,q4 = st.columns(4)
             def quad_metric(sub, label, col):
-                if len(sub) < 5: 
-                    col.metric(label,"N/A",f"N={len(sub)}")
+                if len(sub) < 5:
+                    col.metric(label, "N/A", f"N={len(sub)}")
                     return
+                prof = pd.to_numeric(sub['profit'].squeeze(), errors='coerce').fillna(0.0)
+                r = (float(prof.sum()) / (len(sub) * float(UNIT_SIZE))) * 100
+                col.metric(label, f"{r:+.1f}% ROI", f"N={len(sub):,} bets")
                 
                 # EXTREME TYPE SAFETY
                 prof_data = sub['profit'].iloc[:, 0] if isinstance(sub['profit'], pd.DataFrame) else sub['profit']
