@@ -877,17 +877,29 @@ with tab_edge:
             both_skip = both[(both['edge_score']< MY_T)&(both['gem_score']< GEM_T)]
 
             q1,q2,q3,q4 = st.columns(4)
+            
             def quad_metric(sub, label, col):
                 if len(sub) < 5:
                     col.metric(label, "N/A", f"N={len(sub)}")
                     return
-                r = (sub['profit'].sum() / (len(sub) * float(UNIT_SIZE))) * 100
+                profit = sub['profit']
+                if isinstance(profit, pd.DataFrame):
+                    profit = profit.iloc[:, 0]
+                profit = pd.to_numeric(profit, errors='coerce').fillna(0.0)
+                r = (float(profit.sum()) / (len(sub) * float(UNIT_SIZE))) * 100
                 col.metric(label, f"{r:+.1f}% ROI", f"N={len(sub):,} bets")
-            quad_metric("✅ Both Like It",   both_good, q1)
-            quad_metric("📊 My Score Only",  my_only,   q2)
-            quad_metric("💎 Gem Only",       gem_only,  q3)
-            quad_metric("❌ Both Skip",      both_skip, q4)
-            st.caption("Use full unit size when both models agree — that's your highest-conviction filter.")
+
+            both_good = both[(both['edge_score']>=MY_T)&(both['gem_score']>=GEM_T)].copy()
+            my_only   = both[(both['edge_score']>=MY_T)&(both['gem_score']< GEM_T)].copy()
+            gem_only  = both[(both['edge_score']< MY_T)&(both['gem_score']>=GEM_T)].copy()
+            both_skip = both[(both['edge_score']< MY_T)&(both['gem_score']< GEM_T)].copy()
+
+            # Re-enforce clean profit column on each slice
+            for _df in [both_good, my_only, gem_only, both_skip]:
+                _df['profit'] = pd.to_numeric(
+                    _df['profit'].iloc[:, 0] if isinstance(_df['profit'], pd.DataFrame) else _df['profit'],
+                    errors='coerce'
+                ).fillna(0.0).astype(float)
 
             st.markdown("**Cumulative Profit: Which Filter Wins?**")
             ts = both.sort_values('timestamp').copy()
