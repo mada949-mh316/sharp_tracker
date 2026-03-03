@@ -51,6 +51,15 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
         return pd.DataFrame()
     df = clean_raw_df(raw)
     df = add_derived_columns(df)
+    
+    # ── TYPE SAFETY FIX ──
+    # Force profit and liquidity to standard Python floats so Postgres Decimal 
+    # objects don't cause TypeErrors during division/multiplication later.
+    if 'profit' in df.columns:
+        df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0)
+    if 'liquidity' in df.columns:
+        df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0)
+        
     return df
 
 
@@ -680,7 +689,11 @@ with tab_edge:
         st.stop()
 
     settled_e = closed.copy()
-    baseline_roi = (settled_e['profit'].sum() / max(len(settled_e)*UNIT_SIZE, 1)) * 100
+    
+    # TYPE SAFETY FIX
+    base_prof = float(settled_e['profit'].sum())
+    base_wager = max(len(settled_e) * float(UNIT_SIZE), 1)
+    baseline_roi = (base_prof / base_wager) * 100
 
     # ── 1. SCORE vs ACTUAL ROI ───────────────────────────────
     st.markdown("### 📊 Score Bucket → Actual ROI")
@@ -790,7 +803,7 @@ with tab_edge:
         bms_min = st.slider("Min bets per combo", 5, 50, 10, key='bms_min')
         combo_s = settled_e.groupby('bms_key').agg(
             avg_score=('edge_score','mean'),
-            roi=('profit',lambda x: x.sum()/(len(x)*UNIT_SIZE)*100),
+            roi=('profit',lambda x: float(x.sum())/(len(x)*float(UNIT_SIZE))*100), # TYPE SAFETY FIX
             n=('profit','count'),
             wr=('status',lambda x: (x=='Won').sum()/max(len(x),1)*100),
         ).reset_index()
@@ -804,7 +817,7 @@ with tab_edge:
             textposition='outside', textfont=dict(size=10),
         ))
         
-        # FIX: Apply global layout first, then update xaxes to prevent duplicate argument error
+        # APPLY GLOBAL LAYOUT THEN UPDATE X-AXIS
         fig_bms.update_layout(**LAYOUT,
             title="Top 20 Combos by Avg Edge Score  (bar color = actual ROI)",
             height=max(380, len(combo_s)*28), xaxis_title="Avg Edge Score"
@@ -857,8 +870,15 @@ with tab_edge:
 
             q1,q2,q3,q4 = st.columns(4)
             def quad_metric(sub, label, col):
-                if len(sub)<5: col.metric(label,"N/A",f"N={len(sub)}"); return
-                r = sub['profit'].sum()/(len(sub)*UNIT_SIZE)*100
+                if len(sub) < 5: 
+                    col.metric(label,"N/A",f"N={len(sub)}")
+                    return
+                
+                # TYPE SAFETY FIX: Explicit Python float casting stops Postgres object collisions
+                prof_sum = float(sub['profit'].sum())
+                u_size = float(UNIT_SIZE)
+                r = (prof_sum / (len(sub) * u_size)) * 100
+                
                 col.metric(label,f"{r:+.1f}% ROI",f"N={len(sub):,} bets")
 
             quad_metric("✅ Both Like It",   both_good, q1)
@@ -869,10 +889,11 @@ with tab_edge:
 
             st.markdown("**Cumulative Profit: Which Filter Wins?**")
             ts = both.sort_values('timestamp').copy()
-            ts['pnl_both'] = ts.apply(lambda r: r['profit'] if (r['edge_score']>=MY_T and r['gem_score']>=GEM_T) else 0, axis=1).cumsum()
-            ts['pnl_my']   = ts.apply(lambda r: r['profit'] if r['edge_score']>=MY_T else 0, axis=1).cumsum()
-            ts['pnl_gem']  = ts.apply(lambda r: r['profit'] if r['gem_score']>=GEM_T else 0, axis=1).cumsum()
-            ts['pnl_all']  = ts['profit'].cumsum()
+            # TYPE SAFETY FIX
+            ts['pnl_both'] = ts.apply(lambda r: float(r['profit']) if (r['edge_score']>=MY_T and r['gem_score']>=GEM_T) else 0.0, axis=1).cumsum()
+            ts['pnl_my']   = ts.apply(lambda r: float(r['profit']) if r['edge_score']>=MY_T else 0.0, axis=1).cumsum()
+            ts['pnl_gem']  = ts.apply(lambda r: float(r['profit']) if r['gem_score']>=GEM_T else 0.0, axis=1).cumsum()
+            ts['pnl_all']  = ts['profit'].astype(float).cumsum()
 
             fig_cum = go.Figure()
             fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_both'],name='✅ Both agree',
