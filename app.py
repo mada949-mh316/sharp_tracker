@@ -391,7 +391,7 @@ with tab_analysis:
             fig_hr.update_xaxes(categoryorder='array', categoryarray=hr_stats['hour_lbl'])
             st.plotly_chart(fig_hr, use_container_width=True)
 
-# ─── LIQUIDITY ANALYSIS ──────────────────────────────────────
+        # ─── LIQUIDITY ANALYSIS ──────────────────────────────────────
         st.markdown("---")
         st.subheader("💧 Liquidity Sweet Spot")
         st.caption("Find the exact market depth where your edge is strongest. Too low = noisy limits. Too high = perfectly efficient markets.")
@@ -441,6 +441,7 @@ with tab_analysis:
                 st.plotly_chart(fig_liq_bar, use_container_width=True)
         else:
             st.info("No liquidity data available for settled bets.")
+
 # ─── PROP BREAKDOWN ──────────────────────────────────────────
 with tab_props:
     props_closed = closed[closed['bet_type']=='Player Prop'].copy()
@@ -802,10 +803,14 @@ with tab_edge:
                   for s,r,n in zip(combo_s['avg_score'],combo_s['roi'],combo_s['n'])],
             textposition='outside', textfont=dict(size=10),
         ))
+        
+        # FIX: Apply global layout first, then update xaxes to prevent duplicate argument error
         fig_bms.update_layout(**LAYOUT,
             title="Top 20 Combos by Avg Edge Score  (bar color = actual ROI)",
-            height=max(380, len(combo_s)*28), xaxis_title="Avg Edge Score",
-            xaxis=dict(range=[0,100],gridcolor='#21262d'))
+            height=max(380, len(combo_s)*28), xaxis_title="Avg Edge Score"
+        )
+        fig_bms.update_xaxes(range=[0,100])
+        
         st.plotly_chart(fig_bms, use_container_width=True)
 
         disp = combo_s.copy()
