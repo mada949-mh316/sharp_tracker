@@ -853,7 +853,9 @@ with tab_edge:
 
     if HAS_MY_SCORE and HAS_GEM_SCORE:
         both = settled_e.dropna(subset=['edge_score','gem_score']).copy()
-
+        both = both.loc[:, ~both.columns.duplicated()]
+        both['profit'] = pd.to_numeric(both['profit'], errors='coerce').fillna(0.0).astype(float)
+        
         if len(both) >= 20:
             sample = both.sample(min(2000,len(both)),random_state=42)
             fig_sc = px.scatter(sample, x='edge_score', y='gem_score', color='status',
@@ -879,8 +881,7 @@ with tab_edge:
                 if len(sub) < 5:
                     col.metric(label, "N/A", f"N={len(sub)}")
                     return
-                prof = pd.to_numeric(sub['profit'].squeeze(), errors='coerce').fillna(0.0)
-                r = (float(prof.sum()) / (len(sub) * float(UNIT_SIZE))) * 100
+                r = (sub['profit'].sum() / (len(sub) * float(UNIT_SIZE))) * 100
                 col.metric(label, f"{r:+.1f}% ROI", f"N={len(sub):,} bets")
                 
                 # EXTREME TYPE SAFETY
