@@ -802,25 +802,12 @@ with tab_edge:
                   for s,r,n in zip(combo_s['avg_score'],combo_s['roi'],combo_s['n'])],
             textposition='outside', textfont=dict(size=10),
         ))
-       fig_bms = go.Figure(go.Bar(
-            x=combo_s['avg_score'], y=combo_s['bms_key'], orientation='h',
-            marker_color=[roi_color(r) for r in combo_s['roi']],
-            text=[f"Score:{s:.0f}  ROI:{r:+.1f}%  N={n}"
-                  for s,r,n in zip(combo_s['avg_score'],combo_s['roi'],combo_s['n'])],
-            textposition='outside', textfont=dict(size=10),
-        ))
-        
-        # 1. Apply global layout + specific titles and height
         fig_bms.update_layout(**LAYOUT,
             title="Top 20 Combos by Avg Edge Score  (bar color = actual ROI)",
-            height=max(380, len(combo_s)*28), 
-            xaxis_title="Avg Edge Score"
-        )
-        
-        # 2. Update the x-axis range separately so it doesn't conflict with **LAYOUT
-        fig_bms.update_xaxes(range=[0,100])
-        
+            height=max(380, len(combo_s)*28), xaxis_title="Avg Edge Score",
+            xaxis=dict(range=[0,100],gridcolor='#21262d'))
         st.plotly_chart(fig_bms, use_container_width=True)
+
         disp = combo_s.copy()
         disp['avg_score'] = disp['avg_score'].map('{:.0f}'.format)
         disp['roi']       = disp['roi'].map('{:+.1f}%'.format)
