@@ -955,148 +955,148 @@ with tab_edge:
         sm3.metric("Gem BET signals",  f"{n_gem_bet:,}")
         sm4.metric("Gem Tier 1 (54-56)",f"{n_gem_t1:,}", delta="1-unit signals")
 
-# ─── TWROI SIMULATOR ─────────────────────────────────────────
-with tab_sim:
-    st.subheader("🧪 Historical TWROI Simulator")
-    st.caption("Runs a point-in-time simulation to see how your profit and ROI change if you strictly require positive TWROI and positive Book TWROI.")
-
-    sim_c1, sim_c2 = st.columns(2)
-    group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket"], horizontal=True)
+    # ─── TWROI SIMULATOR ─────────────────────────────────────────
+    with tab_sim:
+        st.subheader("🧪 Historical TWROI Simulator")
+        st.caption("Runs a point-in-time simulation to see how your profit and ROI change if you strictly require positive TWROI and positive Book TWROI.")
     
-    # Default to beginning of the month
-    default_start = datetime.now().replace(day=1).date()
-    start_date = sim_c2.date_input("Simulation Start Date", value=default_start)
-
-    if st.button("▶️ Run Historical Simulation", type="primary"):
-        with st.spinner("Running point-in-time calculations (this takes a few seconds)..."):
-            
-            # 1. Prep data
-            df_sim = df[df['status'].isin(['Won', 'Lost'])].copy()
-            df_sim['timestamp'] = pd.to_datetime(df_sim['timestamp'], utc=True)
-            df_sim = df_sim.sort_values('timestamp')
-            
-            # Derive side and type for the grouping logic
-            df_sim['_side'] = df_sim['play_selection'].apply(lambda x: 'Under' if 'under' in str(x).lower() else ('Over' if 'over' in str(x).lower() else 'Other'))
-            def get_t(m):
-                m = str(m).lower()
-                if 'player' in m: return 'Player Prop'
-                if 'money' in m: return 'Moneyline'
-                if 'spread' in m: return 'Point Spread'
-                if 'total' in m: return 'Total'
-                return 'Other'
-            df_sim['_type'] = df_sim['market'].apply(get_t)
-            
-            # Grouping dimension
-            if group_by_opt == "Edge Score Bucket":
-                df_sim['sim_group'] = pd.cut(df_sim['edge_score'], 
-                                             bins=[-1, 35, 54, 69, 100], 
-                                             labels=['<35 (Avoid/Lean)', '35-54 (Fair)', '55-69 (Good)', '70+ (High)'])
-            else:
-                df_sim['sim_group'] = df_sim['tier'].fillna("Unknown")
-
-            target_dt = pd.to_datetime(start_date, utc=True)
-            target_bets = df_sim[df_sim['timestamp'] >= target_dt].copy()
-
-            if target_bets.empty:
-                st.warning("No settled bets found after this date.")
-            else:
-                progress_bar = st.progress(0)
-                total_bets = len(target_bets)
+        sim_c1, sim_c2 = st.columns(2)
+        group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket"], horizontal=True)
+        
+        # Default to beginning of the month
+        default_start = datetime.now().replace(day=1).date()
+        start_date = sim_c2.date_input("Simulation Start Date", value=default_start)
+    
+        if st.button("▶️ Run Historical Simulation", type="primary"):
+            with st.spinner("Running point-in-time calculations (this takes a few seconds)..."):
                 
-                results = []
+                # 1. Prep data
+                df_sim = df[df['status'].isin(['Won', 'Lost'])].copy()
+                df_sim['timestamp'] = pd.to_datetime(df_sim['timestamp'], utc=True)
+                df_sim = df_sim.sort_values('timestamp')
                 
-                # 2. Run point-in-time loop
-                for i, (idx, bet) in enumerate(target_bets.iterrows()):
-                    if i % 50 == 0:
-                        progress_bar.progress(min(i / total_bets, 1.0))
+                # Derive side and type for the grouping logic
+                df_sim['_side'] = df_sim['play_selection'].apply(lambda x: 'Under' if 'under' in str(x).lower() else ('Over' if 'over' in str(x).lower() else 'Other'))
+                def get_t(m):
+                    m = str(m).lower()
+                    if 'player' in m: return 'Player Prop'
+                    if 'money' in m: return 'Moneyline'
+                    if 'spread' in m: return 'Point Spread'
+                    if 'total' in m: return 'Total'
+                    return 'Other'
+                df_sim['_type'] = df_sim['market'].apply(get_t)
+                
+                # Grouping dimension
+                if group_by_opt == "Edge Score Bucket":
+                    df_sim['sim_group'] = pd.cut(df_sim['edge_score'], 
+                                                 bins=[-1, 35, 54, 69, 100], 
+                                                 labels=['<35 (Avoid/Lean)', '35-54 (Fair)', '55-69 (Good)', '70+ (High)'])
+                else:
+                    df_sim['sim_group'] = df_sim['tier'].fillna("Unknown")
+    
+                target_dt = pd.to_datetime(start_date, utc=True)
+                target_bets = df_sim[df_sim['timestamp'] >= target_dt].copy()
+    
+                if target_bets.empty:
+                    st.warning("No settled bets found after this date.")
+                else:
+                    progress_bar = st.progress(0)
+                    total_bets = len(target_bets)
+                    
+                    results = []
+                    
+                    # 2. Run point-in-time loop
+                    for i, (idx, bet) in enumerate(target_bets.iterrows()):
+                        if i % 50 == 0:
+                            progress_bar.progress(min(i / total_bets, 1.0))
+                            
+                        past_bets = df_sim[df_sim['timestamp'] < bet['timestamp']]
+                        subset = past_bets[
+                            (past_bets['league'] == bet['league']) &
+                            (past_bets['_type'] == bet['_type']) &
+                            (past_bets['_side'] == bet['_side'])
+                        ]
                         
-                    past_bets = df_sim[df_sim['timestamp'] < bet['timestamp']]
-                    subset = past_bets[
-                        (past_bets['league'] == bet['league']) &
-                        (past_bets['_type'] == bet['_type']) &
-                        (past_bets['_side'] == bet['_side'])
-                    ]
-                    
-                    t = bet['timestamp']
-                    s30_df = subset[subset['timestamp'] >= t - pd.Timedelta(days=30)]
-                    s14_df = subset[subset['timestamp'] >= t - pd.Timedelta(days=14)]
-                    s7_df  = subset[subset['timestamp'] >= t - pd.Timedelta(days=7)]
-                    
-                    def calc_roi_sim(sub):
-                        if len(sub) == 0: return 0.0
-                        return (sub['profit'].sum() / (len(sub) * UNIT_SIZE)) * 100
+                        t = bet['timestamp']
+                        s30_df = subset[subset['timestamp'] >= t - pd.Timedelta(days=30)]
+                        s14_df = subset[subset['timestamp'] >= t - pd.Timedelta(days=14)]
+                        s7_df  = subset[subset['timestamp'] >= t - pd.Timedelta(days=7)]
                         
-                    twroi = (calc_roi_sim(s7_df)*0.5) + (calc_roi_sim(s14_df)*0.3) + (calc_roi_sim(s30_df)*0.2)
+                        def calc_roi_sim(sub):
+                            if len(sub) == 0: return 0.0
+                            return (sub['profit'].sum() / (len(sub) * UNIT_SIZE)) * 100
+                            
+                        twroi = (calc_roi_sim(s7_df)*0.5) + (calc_roi_sim(s14_df)*0.3) + (calc_roi_sim(s30_df)*0.2)
+                        
+                        bk30_df = s30_df[s30_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
+                        bk14_df = s14_df[s14_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
+                        bk7_df  = s7_df[s7_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
+                        
+                        bk_twroi = (calc_roi_sim(bk7_df)*0.5) + (calc_roi_sim(bk14_df)*0.3) + (calc_roi_sim(bk30_df)*0.2)
+                        
+                        passed_filter = (twroi > 0) and (bk_twroi > 0)
+                        
+                        results.append({
+                            'group': bet['sim_group'],
+                            'profit': bet['profit'],
+                            'passed': passed_filter
+                        })
                     
-                    bk30_df = s30_df[s30_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
-                    bk14_df = s14_df[s14_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
-                    bk7_df  = s7_df[s7_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
+                    progress_bar.empty()
+                    res_df = pd.DataFrame(results)
                     
-                    bk_twroi = (calc_roi_sim(bk7_df)*0.5) + (calc_roi_sim(bk14_df)*0.3) + (calc_roi_sim(bk30_df)*0.2)
+                    # 3. Aggregate results
+                    summary = []
+                    for grp in res_df['group'].dropna().unique():
+                        grp_bets = res_df[res_df['group'] == grp]
+                        if grp_bets.empty: continue
+                        
+                        base_n = len(grp_bets)
+                        base_prof = grp_bets['profit'].sum()
+                        base_roi = (base_prof / (base_n * UNIT_SIZE)) * 100 if base_n > 0 else 0
+                        
+                        filt_bets = grp_bets[grp_bets['passed']]
+                        filt_n = len(filt_bets)
+                        filt_prof = filt_bets['profit'].sum()
+                        filt_roi = (filt_prof / (filt_n * UNIT_SIZE)) * 100 if filt_n > 0 else 0
+                        
+                        summary.append({
+                            'Group': grp,
+                            'Base Bets': base_n,
+                            'Base ROI (%)': base_roi,
+                            'Base Profit': base_prof,
+                            'Filt Bets': filt_n,
+                            'Filt ROI (%)': filt_roi,
+                            'Filt Profit': filt_prof,
+                            'ROI Delta': filt_roi - base_roi
+                        })
                     
-                    passed_filter = (twroi > 0) and (bk_twroi > 0)
+                    sum_df = pd.DataFrame(summary).sort_values('Base Bets', ascending=False)
                     
-                    results.append({
-                        'group': bet['sim_group'],
-                        'profit': bet['profit'],
-                        'passed': passed_filter
-                    })
-                
-                progress_bar.empty()
-                res_df = pd.DataFrame(results)
-                
-                # 3. Aggregate results
-                summary = []
-                for grp in res_df['group'].dropna().unique():
-                    grp_bets = res_df[res_df['group'] == grp]
-                    if grp_bets.empty: continue
+                    # 4. Visualize
+                    fig_sim = go.Figure()
+                    fig_sim.add_trace(go.Bar(
+                        x=sum_df['Group'], y=sum_df['Base ROI (%)'],
+                        name='Baseline ROI', marker_color='#30363d',
+                        text=[f"{r:+.1f}%" for r in sum_df['Base ROI (%)']], textposition='auto'
+                    ))
+                    fig_sim.add_trace(go.Bar(
+                        x=sum_df['Group'], y=sum_df['Filt ROI (%)'],
+                        name='Filtered ROI (TWROI > 0)', marker_color='#4ade80',
+                        text=[f"{r:+.1f}%" for r in sum_df['Filt ROI (%)']], textposition='auto'
+                    ))
+                    fig_sim.update_layout(**LAYOUT, barmode='group', title=f"Baseline vs Filtered ROI by {group_by_opt}", height=400)
+                    st.plotly_chart(fig_sim, use_container_width=True)
                     
-                    base_n = len(grp_bets)
-                    base_prof = grp_bets['profit'].sum()
-                    base_roi = (base_prof / (base_n * UNIT_SIZE)) * 100 if base_n > 0 else 0
+                    # Format dataframe for display
+                    disp_df = sum_df.copy()
+                    disp_df['Base ROI (%)'] = disp_df['Base ROI (%)'].map('{:+.1f}%'.format)
+                    disp_df['Filt ROI (%)'] = disp_df['Filt ROI (%)'].map('{:+.1f}%'.format)
+                    disp_df['ROI Delta']    = disp_df['ROI Delta'].map('{:+.1f}%'.format)
+                    disp_df['Base Profit']  = disp_df['Base Profit'].map('${:,.0f}'.format)
+                    disp_df['Filt Profit']  = disp_df['Filt Profit'].map('${:,.0f}'.format)
                     
-                    filt_bets = grp_bets[grp_bets['passed']]
-                    filt_n = len(filt_bets)
-                    filt_prof = filt_bets['profit'].sum()
-                    filt_roi = (filt_prof / (filt_n * UNIT_SIZE)) * 100 if filt_n > 0 else 0
-                    
-                    summary.append({
-                        'Group': grp,
-                        'Base Bets': base_n,
-                        'Base ROI (%)': base_roi,
-                        'Base Profit': base_prof,
-                        'Filt Bets': filt_n,
-                        'Filt ROI (%)': filt_roi,
-                        'Filt Profit': filt_prof,
-                        'ROI Delta': filt_roi - base_roi
-                    })
-                
-                sum_df = pd.DataFrame(summary).sort_values('Base Bets', ascending=False)
-                
-                # 4. Visualize
-                fig_sim = go.Figure()
-                fig_sim.add_trace(go.Bar(
-                    x=sum_df['Group'], y=sum_df['Base ROI (%)'],
-                    name='Baseline ROI', marker_color='#30363d',
-                    text=[f"{r:+.1f}%" for r in sum_df['Base ROI (%)']], textposition='auto'
-                ))
-                fig_sim.add_trace(go.Bar(
-                    x=sum_df['Group'], y=sum_df['Filt ROI (%)'],
-                    name='Filtered ROI (TWROI > 0)', marker_color='#4ade80',
-                    text=[f"{r:+.1f}%" for r in sum_df['Filt ROI (%)']], textposition='auto'
-                ))
-                fig_sim.update_layout(**LAYOUT, barmode='group', title=f"Baseline vs Filtered ROI by {group_by_opt}", height=400)
-                st.plotly_chart(fig_sim, use_container_width=True)
-                
-                # Format dataframe for display
-                disp_df = sum_df.copy()
-                disp_df['Base ROI (%)'] = disp_df['Base ROI (%)'].map('{:+.1f}%'.format)
-                disp_df['Filt ROI (%)'] = disp_df['Filt ROI (%)'].map('{:+.1f}%'.format)
-                disp_df['ROI Delta']    = disp_df['ROI Delta'].map('{:+.1f}%'.format)
-                disp_df['Base Profit']  = disp_df['Base Profit'].map('${:,.0f}'.format)
-                disp_df['Filt Profit']  = disp_df['Filt Profit'].map('${:,.0f}'.format)
-                
-                st.dataframe(disp_df, use_container_width=True, hide_index=True)
+                    st.dataframe(disp_df, use_container_width=True, hide_index=True)
 
 
 # ─── DEBUG ────────────────────────────────────────────────────
