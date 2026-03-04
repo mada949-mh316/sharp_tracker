@@ -1,8 +1,16 @@
 """
 shared_logic.py — Single source of truth for Smart Money Tracker.
 
-Imported by both tracker_v8.py (Discord bot) and dashboard_v4.py (Streamlit).
+Imported by both tracker_v9.py (Discord bot) and dashboard_v5.py (Streamlit).
 Any change to tier logic, classification, or thresholds happens here only.
+
+2026-03-03 update: Added good_odds_under flag.
+  - good_odds:       -150 to +499  (unchanged — used for non-prop tier gates)
+  - good_odds_under: -250 to +499  (extended range, only applied to prop Unders)
+  Rationale: settled bet data shows prop Unders at -150 to -250 are positive
+  (+8.7% to +17% ROI on NBA Rebounds/Threes), while prop Overs in the same range
+  are strongly negative (-27% to -62%). Decoupling the two prevents good prop
+  Under signals from being stranded at STANDARD due to the -150 floor.
 """
 
 import re
@@ -22,24 +30,25 @@ DFS_BOOKS     = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftki
 VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAB', 'NCAAF', 'Tennis', 'UFC', 'MLB']
 
 # Tier scoring thresholds
-GOOD_ODDS_MIN     = -150
-GOOD_ODDS_MAX     = 499
-BAD_ODDS_MIN      = 500
-BAD_ODDS_MAX      = 999
-GOOD_LIQ_MIN      = 2000
-GOOD_LIQ_MAX      = 10000
-PRIME_HOURS       = {6, 13, 22}
+GOOD_ODDS_MIN       = -150   # floor for non-prop tier gates
+GOOD_ODDS_MAX       = 499
+GOOD_ODDS_UNDER_MIN = -250   # extended floor for prop Under tier gates only
+BAD_ODDS_MIN        = 500
+BAD_ODDS_MAX        = 999
+GOOD_LIQ_MIN        = 2000
+GOOD_LIQ_MAX        = 10000
+PRIME_HOURS         = {6, 13, 22}
 CONSENSUS_THRESHOLD = 3
 
 # Tier display metadata
 TIER_ORDER  = ['DIAMOND', 'GOLD', 'SILVER', 'STANDARD_PLUS', 'STANDARD', 'WATCH']
 TIER_COLORS = {
-    'DIAMOND': '#00BFFF',
-    'GOLD':    '#D4AF37',
-    'SILVER':  '#C0C0C0',
-    'STANDARD_PLUS': '#27AE60',   # deeper green — distinct from STANDARD
-    'STANDARD':'#2ECC71',
-    'WATCH':   '#95A5A6',
+    'DIAMOND':       '#00BFFF',
+    'GOLD':          '#D4AF37',
+    'SILVER':        '#C0C0C0',
+    'STANDARD_PLUS': '#27AE60',
+    'STANDARD':      '#2ECC71',
+    'WATCH':         '#95A5A6',
 }
 TIER_EMOJI = {
     'DIAMOND': '💎', 'GOLD': '🥇', 'SILVER': '🥈',
@@ -48,26 +57,26 @@ TIER_EMOJI = {
 
 # Discord embed colors (hex int)
 TIER_DISCORD_COLOR = {
-    'DIAMOND': 0x00BFFF,
-    'GOLD':    0xD4AF37,
-    'SILVER':  0xC0C0C0,
-    'STANDARD_PLUS': 0x27AE60,
-    'STANDARD':0x1ABC9C,   # teal — distinct from silver/grey
-    'WATCH':   0xE67E22,   # orange — clearly "caution" tone
-    'FADE':    0xE74C3C,
-    'HIGH_CONVICTION': 0x9B59B6,  # purple — score 55+
+    'DIAMOND':        0x00BFFF,
+    'GOLD':           0xD4AF37,
+    'SILVER':         0xC0C0C0,
+    'STANDARD_PLUS':  0x27AE60,
+    'STANDARD':       0x1ABC9C,
+    'WATCH':          0xE67E22,
+    'FADE':           0xE74C3C,
+    'HIGH_CONVICTION':0x9B59B6,
 }
 
 # Sharp book signal quality
 SHARP_BOOK_MARKET_WHITELIST = {
-    ("NoVigApp", "Player Prop"),
-    ("Prophet",  "Player Prop"),
-    ("Pinnacle", "Point Spread"),
-    ("Pinnacle", "Total"),
+    ("NoVigApp",  "Player Prop"),
+    ("Prophet",   "Player Prop"),
+    ("Pinnacle",  "Point Spread"),
+    ("Pinnacle",  "Total"),
     ("Polymarket","Moneyline"),
-    ("NoVigApp", "Total"),
-    ("NoVigApp", "Moneyline"),
-    ("Prophet",  "Total"),
+    ("NoVigApp",  "Total"),
+    ("NoVigApp",  "Moneyline"),
+    ("Prophet",   "Total"),
 }
 
 SHARP_BOOK_MARKET_BLACKLIST = {
@@ -83,13 +92,11 @@ SHARP_BOOK_MARKET_BLACKLIST = {
 
 # Prop categories that are structurally negative within specific leagues.
 # Keyed as (league, prop_category). Bets matching these are demoted to WATCH.
-# Data basis: NHL Shots on Goal Under = -4.8% ROI (N=75), Saves Under = -40% (N=5).
-# The general "prop Under = edge" signal breaks down for NHL goalie/shot stats.
 PROP_CATEGORY_LEAGUE_BLACKLIST = {
-    ("NBA", "Double Double"),   # -85.7% ROI (N=28), near-0% WR — almost never hits
-    ("NFL", "Touchdowns"),      # -85.5% ROI (N=27), 0% WR — never wins
-    ("NHL", "Points"),          # -38.3% ROI (N=22)
-    ("Tennis", "Total Games"),  # -23.0% ROI (N=106) — added 2026-02-28
+    ("NBA",    "Double Double"),  # -85.7% ROI (N=28), near-0% WR — almost never hits
+    ("NFL",    "Touchdowns"),     # -85.5% ROI (N=27), 0% WR — never wins
+    ("NHL",    "Points"),         # -38.3% ROI (N=22)
+    ("Tennis", "Total Games"),    # -23.0% ROI (N=106) — added 2026-02-28
     # Removed 2026-02-28 — flipped positive with larger sample:
     # ("NHL", "Shots on Goal") was -4.8% (N=75), now +5.7% (N=279)
     # ("NHL", "Saves") was -40% (N=5), now +2.0% (N=36)
@@ -102,28 +109,33 @@ LEAGUE_SHARP_BOOK_SUPPRESS = {
     "NCAAF":  {"Prophet",  "NoVigApp"},
 }
 
-# Tier Discord descriptions (DIAMOND is built dynamically — see build_diamond_description)
+# Tier Discord descriptions (DIAMOND is built dynamically)
 def _tier_desc_gold():
     r = _SIGNAL_ROI.get('gold_roi', 13.0)
-    return f"Strong signal: either 3+ sharp books in consensus, a player prop Under with good liquidity, or a prime-time spot with solid market depth. {r:+.1f}% ROI historically."
+    return (f"Strong signal: either 3+ sharp books in consensus, a player prop Under "
+            f"with good liquidity, or a prime-time spot with solid market depth. "
+            f"{r:+.1f}% ROI historically.")
 
 def _tier_desc_silver():
     r = _SIGNAL_ROI.get('silver_roi', 10.6)
-    return f"Player prop Under in a profitable odds range, or a prime-time alert. Our core edge — {r:+.1f}% ROI historically."
+    return (f"Player prop Under in a profitable odds range, or a prime-time alert. "
+            f"Our core edge — {r:+.1f}% ROI historically.")
 
 def _tier_desc_std_plus():
     r = _SIGNAL_ROI.get('std_plus_roi', 23.3)
-    return f"Selective STANDARD signal: Moneyline on NCAAB/NHL/NFL/NCAAF, or a Point Spread on NFL/NCAAF. These slices run {r:+.1f}% ROI historically. Play at standard unit size."
+    return (f"Selective STANDARD signal: Moneyline on NCAAB/NHL/NFL/NCAAF, or a Point "
+            f"Spread on NFL/NCAAF. These slices run {r:+.1f}% ROI historically. "
+            f"Play at standard unit size.")
 
 TIER_DESCRIPTIONS = {
-    'GOLD':          None,  # populated dynamically via _tier_desc_gold()
-    'SILVER':        None,  # populated dynamically via _tier_desc_silver()
-    'STANDARD_PLUS': None,  # populated dynamically via _tier_desc_std_plus()
-    'STANDARD':"Sharp money detected. Passes ROI filters but no additional edge flags. "
-               "Volume play — follow at standard unit size.",
-    'WATCH':   "Flagged for review: Fanatics line or odds in the 500–999 range, both historically "
-               "negative. Proceed with caution or skip.",
-    'FADE':    "Sharp signal is historically negative here. Data suggests betting the opposite side.",
+    'GOLD':          None,   # populated dynamically via _tier_desc_gold()
+    'SILVER':        None,   # populated dynamically via _tier_desc_silver()
+    'STANDARD_PLUS': None,   # populated dynamically via _tier_desc_std_plus()
+    'STANDARD': "Sharp money detected. Passes ROI filters but no additional edge flags. "
+                "Volume play — follow at standard unit size.",
+    'WATCH':    "Flagged for review: Fanatics line or odds in the 500–999 range, both historically "
+                "negative. Proceed with caution or skip.",
+    'FADE':     "Sharp signal is historically negative here. Data suggests betting the opposite side.",
 }
 
 def _get_tier_description(tier):
@@ -131,6 +143,7 @@ def _get_tier_description(tier):
     if tier == 'SILVER':        return _tier_desc_silver()
     if tier == 'STANDARD_PLUS': return _tier_desc_std_plus()
     return TIER_DESCRIPTIONS.get(tier, "Sharp money detected.")
+
 
 # ─────────────────────────────────────────────────────────────
 # DYNAMIC SIGNAL ROI CACHE
@@ -158,7 +171,7 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
     Pull settled bets and recompute all ROI stats used in signal summaries.
     Call at tracker startup and periodically (e.g. daily).
     """
-    import os, re as _re
+    import os
     from datetime import datetime as _dt
 
     global _SIGNAL_ROI, _SIGNAL_ROI_LAST_REFRESH
@@ -185,9 +198,10 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
             import pandas as _pd
             df = _pd.read_csv(csv_path)
             df.columns = df.columns.str.lower().str.strip()
-        except: return
+        except:
+            return
 
-    import pandas as _pd, numpy as _np
+    import pandas as _pd
     df['profit']    = _pd.to_numeric(df['profit'], errors='coerce').fillna(0)
     df['liquidity'] = _pd.to_numeric(df['liquidity'], errors='coerce').fillna(0)
     UNIT = 100
@@ -203,34 +217,37 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
     df['_odds'] = df['play_odds'].apply(_odds)
     df['_hour'] = _pd.to_datetime(df['timestamp'], errors='coerce').dt.hour
 
-    is_player  = df['market'].str.contains('Player', case=False, na=False)
-    is_under   = df['play_selection'].str.contains('Under', case=False, na=False)
-    is_over    = df['play_selection'].str.contains('Over',  case=False, na=False)
+    is_player    = df['market'].str.contains('Player', case=False, na=False)
+    is_under     = df['play_selection'].str.contains('Under', case=False, na=False)
+    is_over      = df['play_selection'].str.contains('Over',  case=False, na=False)
     is_good_liq  = df['liquidity'].between(2000, 10000)
     is_good_odds = df['_odds'].between(-150, 499)
     is_ncaab_ml  = (df['league'] == 'NCAAB') & df['market'].str.contains('Moneyline', case=False, na=False)
     is_night     = df['_hour'].between(0, 9) | df['_hour'].between(22, 23)
 
-    # Tier classification
     try:
         tiers = []
         for _, row in df.iterrows():
-            try: t, _ = classify_tier(row); tiers.append(t)
-            except: tiers.append('STANDARD')
+            try:
+                t, _ = classify_tier(row)
+                tiers.append(t)
+            except:
+                tiers.append('STANDARD')
         df['_tier'] = tiers
-    except: df['_tier'] = 'STANDARD'
+    except:
+        df['_tier'] = 'STANDARD'
 
     updates = {
-        'prop_under_roi':    _roi(df[is_player & is_under]),
-        'prop_over_roi':     _roi(df[is_player & is_over]),
-        'good_liq_roi':      _roi(df[is_good_liq]),
-        'good_odds_roi':     _roi(df[is_good_odds]),
-        'diamond_roi':       _roi(df[df['_tier'] == 'DIAMOND']),
-        'gold_roi':          _roi(df[df['_tier'] == 'GOLD']),
-        'silver_roi':        _roi(df[df['_tier'] == 'SILVER']),
-        'std_plus_roi':      _roi(df[df['_tier'] == 'STANDARD_PLUS']),
-        'diamond_3book_roi': _roi(df[(df['_tier'] == 'DIAMOND') & (df['sharp_book'].str.count(',') >= 2)]),
-        'diamond_under_roi': _roi(df[(df['_tier'] == 'DIAMOND') & is_player & is_under]),
+        'prop_under_roi':     _roi(df[is_player & is_under]),
+        'prop_over_roi':      _roi(df[is_player & is_over]),
+        'good_liq_roi':       _roi(df[is_good_liq]),
+        'good_odds_roi':      _roi(df[is_good_odds]),
+        'diamond_roi':        _roi(df[df['_tier'] == 'DIAMOND']),
+        'gold_roi':           _roi(df[df['_tier'] == 'GOLD']),
+        'silver_roi':         _roi(df[df['_tier'] == 'SILVER']),
+        'std_plus_roi':       _roi(df[df['_tier'] == 'STANDARD_PLUS']),
+        'diamond_3book_roi':  _roi(df[(df['_tier'] == 'DIAMOND') & (df['sharp_book'].str.count(',') >= 2)]),
+        'diamond_under_roi':  _roi(df[(df['_tier'] == 'DIAMOND') & is_player & is_under]),
         'ncaab_ml_night_roi': _roi(df[is_ncaab_ml & is_night]),
         'ncaab_ml_day_roi':   _roi(df[is_ncaab_ml & ~is_night]),
     }
@@ -248,45 +265,33 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
 
 # ─────────────────────────────────────────────────────────────
 # Odds bucket display order
-
-ODDS_BUCKET_ORDER = ["< -750", "-750 to -300", "-300 to -150", "-150 to +150",
-                     "+150 to +300", "+300 to +750", "> +750"]
-
+# ─────────────────────────────────────────────────────────────
+ODDS_BUCKET_ORDER = [
+    "< -750", "-750 to -300", "-300 to -150", "-150 to +150",
+    "+150 to +300", "+300 to +750", "> +750",
+]
 
 # STANDARD_PLUS filter rules — derived from historical ROI analysis.
-# These slices run ~+14-15% ROI; rest of STANDARD runs -1.3%.
-# Moneylines on these leagues outperform regardless of sharp book.
-STANDARD_PLUS_ML_LEAGUES    = {'NCAAB', 'NHL', 'NFL', 'NCAAF'}
-# Spreads on these leagues outperform (Prophet/NoVigApp driven).
+STANDARD_PLUS_ML_LEAGUES     = {'NCAAB', 'NHL', 'NFL', 'NCAAF'}
 STANDARD_PLUS_SPREAD_LEAGUES = {'NFL', 'NCAAF'}
-# Sharp books that kill Moneyline ROI — exclude these from STANDARD_PLUS ML
-# (Prophet ML = -10.4%, BetMGM play_book ML = -11.5% — handled at play_book level)
-STANDARD_PLUS_ML_BAD_SHARPS = {'Prophet'}
-# Play books that drag ML down even on good leagues
-STANDARD_PLUS_BAD_BOOKS     = {'BetMGM', 'Fliff'}
-# Odds range to skip within STANDARD_PLUS (the +300-+750 bucket is -21.5% ROI)
-STANDARD_PLUS_BAD_ODDS_MIN  = 301
-STANDARD_PLUS_BAD_ODDS_MAX  = 750
+STANDARD_PLUS_ML_BAD_SHARPS  = {'Prophet'}
+STANDARD_PLUS_BAD_BOOKS      = {'BetMGM', 'Fliff'}
+STANDARD_PLUS_BAD_ODDS_MIN   = 301
+STANDARD_PLUS_BAD_ODDS_MAX   = 750
 
-
-# FADE filter rules — derived from historical analysis.
-# A bet only qualifies as a FADE if:
-#   (a) its league/type/side is in this set (structurally negative all-time), AND
-#   (b) the broad 30d ROI for that slice is also <= -5% (confirms current trend), AND
-#   (c) n_30d >= 30 (enough data to be meaningful)
-# Excluded slices where fading also loses money (both sides have negative EV from vig).
+# FADE filter rules
 STRUCTURAL_FADES = {
     ('NCAAF', 'Total',       'Under'),   # fade ROI +53.0%  WR 75%
     ('NFL',   'Player Prop', 'Over'),    # fade ROI +41.2%  WR 69%
-    # NFL Total Under removed — fade WR only 48% during awake hours (8AM–11PM), below break-even
     ('NHL',   'Player Prop', 'Over'),    # fade ROI +10.7%  WR 55%
     ('NHL',   'Total',       'Under'),   # fade ROI +17.6%  WR 61%
 }
-FADE_ROI_THRESHOLD  = -5.0   # 30d broad ROI must be at or below this to trigger
-FADE_MIN_SAMPLE     = 30     # minimum bets in 30d broad window
+FADE_ROI_THRESHOLD = -5.0
+FADE_MIN_SAMPLE    = 30
 
 
-
+# ─────────────────────────────────────────────────────────────
+# TEXT HELPERS
 # ─────────────────────────────────────────────────────────────
 
 def clean_text(text):
@@ -323,12 +328,12 @@ def get_decimal_odds(american_odds):
     return 1 + (100.0 / abs(american_odds))
 
 def get_odds_bucket(val):
-    if val < -750: return "< -750"
+    if val < -750:         return "< -750"
     if -750 <= val < -300: return "-750 to -300"
     if -300 <= val < -150: return "-300 to -150"
-    if -150 <= val <= 150:  return "-150 to +150"
-    if 150  < val <= 300:   return "+150 to +300"
-    if 300  < val <= 750:   return "+300 to +750"
+    if -150 <= val <= 150: return "-150 to +150"
+    if  150 <  val <= 300: return "+150 to +300"
+    if  300 <  val <= 750: return "+300 to +750"
     return "> +750"
 
 def calculate_arb_percent(play_odds, sharp_odds):
@@ -358,7 +363,7 @@ def categorize_bet(market, selection):
     """
     Classify a bet into Moneyline / Point Spread / Player Prop / Total.
     Player Prop is checked BEFORE Total to prevent 'Total Points' / 'Total Goals'
-    being stolen by the 'points'/'goals' keyword list.
+    being stolen by the keyword list.
     """
     m, s = str(market).lower(), str(selection).lower()
     if "moneyline" in m: return "Moneyline"
@@ -380,35 +385,32 @@ def get_bet_side(selection):
 def extract_prop_category(market):
     """
     Extract prop stat category from market name.
-    Combined categories (PRA, Pts+Reb, etc.) are checked BEFORE singles
-    to prevent 'Points + Rebounds' being returned as 'Points'.
+    Combined categories checked BEFORE singles to prevent misclassification.
     """
     m = str(market).lower().replace("player ", "").replace("alternate ", "").replace("alt ", "")
     if "milestone" in m: return "Milestone"
-    # Combined first
     if "points" in m and "rebounds" in m and "assists" in m: return "PRA"
-    if "points" in m and "rebounds" in m: return "Pts+Reb"
-    if "points" in m and "assists"  in m: return "Pts+Ast"
-    if "rebounds" in m and "assists" in m: return "Reb+Ast"
-    if "blocks"   in m and "steals"  in m: return "Blk+Stl"
-    # Singles
-    if "points"    in m: return "Points"
-    if "rebounds"  in m: return "Rebounds"
-    if "assists"   in m: return "Assists"
-    if "threes"    in m or "3-point" in m or "3pt" in m: return "Threes"
-    if "blocked" in m: return "Blocked Shots"  # must come before generic "shots" check
-    if "blocks"    in m: return "Blocks"
-    if "steals"    in m: return "Steals"
-    if "turnovers" in m: return "Turnovers"
-    if "shots"     in m or "sog"    in m: return "Shots on Goal"
-    if "saves"     in m: return "Saves"
-    if "goals"     in m: return "Goals"
-    if "passing"   in m: return "Passing"
-    if "rushing"   in m: return "Rushing"
-    if "receiving" in m or "receptions" in m: return "Receiving"
-    if "touchdown" in m or "score" in m: return "Touchdowns"
-    if "double"    in m: return "Double Double"
-    if "triple"    in m: return "Triple Double"
+    if "points" in m and "rebounds" in m:                    return "Pts+Reb"
+    if "points" in m and "assists"  in m:                    return "Pts+Ast"
+    if "rebounds" in m and "assists" in m:                   return "Reb+Ast"
+    if "blocks"   in m and "steals"  in m:                   return "Blk+Stl"
+    if "points"    in m:                                      return "Points"
+    if "rebounds"  in m:                                      return "Rebounds"
+    if "assists"   in m:                                      return "Assists"
+    if "threes"    in m or "3-point" in m or "3pt" in m:     return "Threes"
+    if "blocked"   in m:                                      return "Blocked Shots"
+    if "blocks"    in m:                                      return "Blocks"
+    if "steals"    in m:                                      return "Steals"
+    if "turnovers" in m:                                      return "Turnovers"
+    if "shots"     in m or "sog"    in m:                    return "Shots on Goal"
+    if "saves"     in m:                                      return "Saves"
+    if "goals"     in m:                                      return "Goals"
+    if "passing"   in m:                                      return "Passing"
+    if "rushing"   in m:                                      return "Rushing"
+    if "receiving" in m or "receptions" in m:                 return "Receiving"
+    if "touchdown" in m or "score" in m:                      return "Touchdowns"
+    if "double"    in m:                                      return "Double Double"
+    if "triple"    in m:                                      return "Triple Double"
     return "Other"
 
 
@@ -450,30 +452,21 @@ def is_standard_plus(bet_data, bet_type, odds_val, primary_sharp):
     """
     Returns True if a STANDARD-tier bet falls into the historically profitable
     STANDARD_PLUS slice (+14-15% ROI historically).
-
-    Rules derived from slicing 5,929 settled STANDARD bets:
-      • Moneyline on NCAAB/NHL/NFL/NCAAF
-          AND primary sharp is NOT Prophet (Prophet ML = -10.4%)
-          AND play_book is NOT BetMGM or Fliff
-          AND odds NOT in +301 to +750 range (-21.5% ROI there)
-      • Point Spread on NFL/NCAAF
-          AND odds NOT in +301 to +750 range
     """
     league    = str(bet_data.get('league', ''))
     play_book = str(bet_data.get('play_book', '')).strip()
 
-    # Reject bad odds bucket regardless of market
     if STANDARD_PLUS_BAD_ODDS_MIN <= odds_val <= STANDARD_PLUS_BAD_ODDS_MAX:
         return False
 
     if bet_type == 'Moneyline':
-        if league not in STANDARD_PLUS_ML_LEAGUES:           return False
-        if primary_sharp in STANDARD_PLUS_ML_BAD_SHARPS:     return False
-        if play_book in STANDARD_PLUS_BAD_BOOKS:              return False
+        if league not in STANDARD_PLUS_ML_LEAGUES:       return False
+        if primary_sharp in STANDARD_PLUS_ML_BAD_SHARPS: return False
+        if play_book in STANDARD_PLUS_BAD_BOOKS:          return False
         return True
 
     if bet_type == 'Point Spread':
-        if league not in STANDARD_PLUS_SPREAD_LEAGUES:        return False
+        if league not in STANDARD_PLUS_SPREAD_LEAGUES:   return False
         return True
 
     return False
@@ -484,9 +477,17 @@ def classify_tier(bet_data):
     Classify a bet dict (or DataFrame row) into a tier + flags dict.
     Returns (tier_string, flags_dict).
 
-    Works for both the tracker (dict from scraper) and the dashboard
-    (row from DataFrame — pass row.to_dict() or just the row directly
-    since .get() works on both).
+    Two odds-range flags are used to avoid stranding prop Unders at short prices:
+
+      good_odds:       -150 to +499
+        Used for: consensus gates, non-prop tier gates, WATCH gate, prime-time SILVER/GOLD
+        Rationale: non-prop bets and prop Overs at -151 to -250 show negative ROI
+
+      good_odds_under: -250 to +499  (extended floor, prop Unders only)
+        Used for: prop Under SILVER and GOLD gates
+        Rationale: prop Unders at -150 to -250 show +8.7% to +17% ROI (NBA
+        Rebounds, Threes) — keeping the -150 floor was silently blocking these.
+        Prop Overs in the same range show -27% to -62% and are NOT given this extension.
     """
     s           = str(bet_data.get('play_selection', '')).lower()
     is_under    = 'under' in s
@@ -498,85 +499,115 @@ def classify_tier(bet_data):
     is_prop_under = is_under and bet_type == 'Player Prop'
     league        = str(bet_data.get('league', ''))
 
-    # Prop category blacklist — demote to WATCH before anything else.
-    # Catches structurally negative prop stats (e.g. NHL Shots on Goal, Saves)
-    # that aren't caught by the sharp book blacklist.
+    # Prop category blacklist — demote to WATCH before anything else
     if bet_type == 'Player Prop':
         prop_cat = extract_prop_category(bet_data.get('market', ''))
         if (league, prop_cat) in PROP_CATEGORY_LEAGUE_BLACKLIST:
             flags = {
                 'is_under': is_under, 'is_prop_under': is_prop_under,
                 'is_standard_plus': False, 'consensus': consensus,
-                'good_odds': False, 'bad_odds': False, 'good_liq': False,
+                'good_odds': False, 'good_odds_under': False,
+                'bad_odds': False, 'good_liq': False,
                 'prime_time': False, 'is_fanatics': is_fanatics,
                 'prop_blacklisted': True,
             }
             return 'WATCH', flags
 
-    try:    odds = float(str(bet_data.get('play_odds', '0')).replace('+', ''))
-    except: odds = 0
+    # Parse odds — handle string or numeric, +/− prefixes
+    try:
+        odds = float(str(bet_data.get('play_odds', '0')).replace('+', '').replace('−', '-'))
+    except:
+        odds = 0.0
+
+    # Standard good-odds range (-150 to +499) — used for non-prop gates
     good_odds = GOOD_ODDS_MIN <= odds <= GOOD_ODDS_MAX
-    bad_odds  = BAD_ODDS_MIN  <= odds <= BAD_ODDS_MAX
+
+    # Extended good-odds range (-250 to +499) — used ONLY for prop Under gates
+    # Prop Overs at -151 to -250 are not given this extension (they average -27% to -62% ROI)
+    good_odds_under = GOOD_ODDS_UNDER_MIN <= odds <= GOOD_ODDS_MAX
+
+    bad_odds = BAD_ODDS_MIN <= odds <= BAD_ODDS_MAX
 
     try:    liq = float(bet_data.get('liquidity', 0))
-    except: liq = 0
+    except: liq = 0.0
     good_liq = GOOD_LIQ_MIN <= liq <= GOOD_LIQ_MAX
 
     prime_time = False
     try:
         ts = bet_data.get('timestamp', '')
         if ts:
-            # Handle both datetime objects and strings
             dt = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts).strip())
             prime_time = dt.hour in PRIME_HOURS
     except Exception:
         pass
 
     flags = {
-        'is_under':        is_under,
-        'is_prop_under':   is_prop_under,
-        'is_standard_plus': False,   # updated below if STANDARD_PLUS is assigned
-        'consensus':       consensus,
-        'good_odds':       good_odds,
-        'bad_odds':        bad_odds,
-        'good_liq':        good_liq,
-        'prime_time':      prime_time,
-        'is_fanatics':     is_fanatics,
+        'is_under':         is_under,
+        'is_prop_under':    is_prop_under,
+        'is_standard_plus': False,        # updated below if STANDARD_PLUS assigned
+        'consensus':        consensus,
+        'good_odds':        good_odds,
+        'good_odds_under':  good_odds_under,
+        'bad_odds':         bad_odds,
+        'good_liq':         good_liq,
+        'prime_time':       prime_time,
+        'is_fanatics':      is_fanatics,
     }
 
+    # ── WATCH ─────────────────────────────────────────────────────────────
     if (bad_odds or is_fanatics) and consensus < CONSENSUS_THRESHOLD and not is_prop_under:
         return 'WATCH', flags
-    if consensus >= CONSENSUS_THRESHOLD and good_odds and is_prop_under: return 'DIAMOND', flags
-    if consensus >= CONSENSUS_THRESHOLD and good_odds and good_liq:      return 'DIAMOND', flags
-    if consensus >= CONSENSUS_THRESHOLD and good_odds:                   return 'GOLD',    flags
-    if is_prop_under and good_liq and good_odds:                         return 'GOLD',    flags
-    if prime_time    and good_liq and good_odds:                         return 'GOLD',    flags
-    if is_prop_under and good_odds:                                      return 'SILVER',  flags
-    if prime_time    and good_odds:                                      return 'SILVER',  flags
-    # Check if this STANDARD bet falls into a historically positive sub-slice
-    primary_sharp = [b.strip().strip('"') for b in str(bet_data.get('sharp_book', '')).split(',') if b.strip()]
-    primary_sharp = primary_sharp[0] if primary_sharp else ''
-    try:    odds_val = float(str(bet_data.get('play_odds', '0')).replace('+', '').replace('−', '-'))
-    except: odds_val = 0
+
+    # ── DIAMOND ───────────────────────────────────────────────────────────
+    # 3+ books + standard good odds + prop under
+    if consensus >= CONSENSUS_THRESHOLD and good_odds and is_prop_under:
+        return 'DIAMOND', flags
+    # 3+ books + standard good odds + good liquidity
+    if consensus >= CONSENSUS_THRESHOLD and good_odds and good_liq:
+        return 'DIAMOND', flags
+
+    # ── GOLD ──────────────────────────────────────────────────────────────
+    # 3+ books + standard good odds (no liq requirement)
+    if consensus >= CONSENSUS_THRESHOLD and good_odds:
+        return 'GOLD', flags
+    # Prop Under + good liquidity — uses extended odds floor (-250)
+    if is_prop_under and good_liq and good_odds_under:
+        return 'GOLD', flags
+    # Prime time + good liquidity + standard good odds
+    if prime_time and good_liq and good_odds:
+        return 'GOLD', flags
+
+    # ── SILVER ────────────────────────────────────────────────────────────
+    # Prop Under — uses extended odds floor (-250)
+    if is_prop_under and good_odds_under:
+        return 'SILVER', flags
+    # Prime time + standard good odds
+    if prime_time and good_odds:
+        return 'SILVER', flags
+
+    # ── STANDARD_PLUS ─────────────────────────────────────────────────────
+    primary_sharp = books[0] if books else ''
+    try:
+        odds_val = float(str(bet_data.get('play_odds', '0')).replace('+', '').replace('−', '-'))
+    except:
+        odds_val = 0.0
 
     if is_standard_plus(bet_data, bet_type, odds_val, primary_sharp):
         flags['is_standard_plus'] = True
-        # NCAAB ML is overnight-driven: +14.9% all-time but only +4.4% during
-        # awake hours (8AM–11PM). Flag so Discord alert can warn the user.
         if league == 'NCAAB' and bet_type == 'Moneyline':
-            flags['ncaab_ml_overnight'] = True  # always flag NCAAB ML — message adapts to time
+            flags['ncaab_ml_overnight'] = True
         return 'STANDARD_PLUS', flags
 
-    flags['is_standard_plus'] = False
+    # ── STANDARD ──────────────────────────────────────────────────────────
     return 'STANDARD', flags
 
 
 # ─────────────────────────────────────────────────────────────
-# DISCORD MESSAGE BUILDERS  (tracker only, but kept here for single source of truth)
+# DISCORD MESSAGE BUILDERS
 # ─────────────────────────────────────────────────────────────
 
 def build_diamond_description(flags):
-    """Dynamic DIAMOND description — avoids hardcoding 'player prop Under' for non-prop bets."""
+    """Dynamic DIAMOND description."""
     consensus     = flags.get('consensus', 0)
     is_prop_under = flags.get('is_prop_under', False)
     good_liq      = flags.get('good_liq', False)
@@ -613,34 +644,30 @@ def build_signal_summary(tier, flags, alert_type, is_low_confidence, is_suppress
         reasons.append("this appeared during a historically profitable time window")
     if flags.get('good_odds'):
         reasons.append("odds are in the profitable range (−150 to +499)")
+    elif flags.get('good_odds_under') and flags.get('is_prop_under'):
+        # odds are -151 to -250 — good for prop Unders specifically
+        reasons.append("odds are in the profitable prop Under range (−250 to +499)")
 
     base = build_diamond_description(flags) if tier == 'DIAMOND' else _get_tier_description(tier)
-    if tier == 'STANDARD_PLUS':
-        sl = []
-        if flags.get('bet_type') == 'Moneyline': sl.append('Moneyline')
-        if flags.get('bet_type') == 'Point Spread': sl.append('Point Spread')
-        base = TIER_DESCRIPTIONS['STANDARD_PLUS']
     why  = ("Flagged because: " + ", ".join(reasons) + ".") if reasons else ""
 
     notes = []
-    if is_low_confidence:                       notes.append("⚠️ Low-confidence sharp source — verify before betting.")
-    if is_suppressed and signal_reason:         notes.append(f"🔶 Note: {signal_reason}.")
-    if flags.get('is_fanatics'):                notes.append("⚠️ Fanatics line — historically underperforms other books.")
-    if flags.get('bad_odds'):                   notes.append("⚠️ Odds in 500–999 range — historically negative ROI.")
+    if is_low_confidence:               notes.append("⚠️ Low-confidence sharp source — verify before betting.")
+    if is_suppressed and signal_reason: notes.append(f"🔶 Note: {signal_reason}.")
+    if flags.get('is_fanatics'):        notes.append("⚠️ Fanatics line — historically underperforms other books.")
+    if flags.get('bad_odds'):           notes.append("⚠️ Odds in 500–999 range — historically negative ROI.")
     if flags.get('ncaab_ml_overnight'):
         from datetime import datetime as _dt
-        _night = _SIGNAL_ROI.get('ncaab_ml_night_roi', 0.5)
-        _day   = _SIGNAL_ROI.get('ncaab_ml_day_roi', 1.7)
-        _hour  = _dt.now().hour
+        _night    = _SIGNAL_ROI.get('ncaab_ml_night_roi', 0.5)
+        _day      = _SIGNAL_ROI.get('ncaab_ml_day_roi', 1.7)
+        _hour     = _dt.now().hour
         _is_night = _hour < 9
         if _night >= _day:
-            # Overnight historically better
             if _is_night:
                 notes.append(f"🌙 NCAAB Moneyline is in its strongest window — overnight edge {_night:+.1f}% vs {_day:+.1f}% daytime.")
             else:
                 notes.append(f"⚠️ NCAAB Moneyline performs best overnight ({_night:+.1f}%) vs now ({_day:+.1f}% daytime). Proceed with awareness.")
         else:
-            # Daytime historically better
             if _is_night:
                 notes.append(f"⚠️ NCAAB Moneyline performs better during the day ({_day:+.1f}%) than overnight ({_night:+.1f}%). Proceed with awareness.")
             else:
@@ -651,34 +678,35 @@ def build_signal_summary(tier, flags, alert_type, is_low_confidence, is_suppress
 
 def build_flag_bar(flags):
     parts = []
-    if flags.get('is_prop_under'):                          parts.append('🔽 PROP UNDER')
-    if flags.get('consensus', 1) >= CONSENSUS_THRESHOLD:   parts.append(f"🤝 {flags['consensus']}x CONSENSUS")
-    elif flags.get('consensus', 1) == 2:                   parts.append('🤝 2x CONSENSUS')
-    if flags.get('good_odds'):   parts.append('✅ GOOD ODDS')
-    if flags.get('bad_odds'):    parts.append('⚠️ BAD ODDS')
-    if flags.get('good_liq'):    parts.append('💧 GOOD LIQ')
-    if flags.get('prime_time'):  parts.append('⏰ PRIME TIME')
-    if flags.get('is_fanatics'):      parts.append('⚠️ FANATICS')
-    if flags.get('is_standard_plus'):   parts.append('⭐ STD+')
-    if flags.get('ncaab_ml_overnight'): parts.append('🌙 OVERNIGHT EDGE')
-    if flags.get('prop_blacklisted'):   parts.append('🚫 PROP BLACKLISTED')
+    if flags.get('is_prop_under'):                        parts.append('🔽 PROP UNDER')
+    if flags.get('consensus', 1) >= CONSENSUS_THRESHOLD:  parts.append(f"🤝 {flags['consensus']}x CONSENSUS")
+    elif flags.get('consensus', 1) == 2:                  parts.append('🤝 2x CONSENSUS')
+    if flags.get('good_odds'):
+        parts.append('✅ GOOD ODDS')
+    elif flags.get('good_odds_under') and flags.get('is_prop_under'):
+        parts.append('✅ GOOD ODDS (UNDER)')   # -151 to -250 range, prop under only
+    if flags.get('bad_odds'):        parts.append('⚠️ BAD ODDS')
+    if flags.get('good_liq'):        parts.append('💧 GOOD LIQ')
+    if flags.get('prime_time'):      parts.append('⏰ PRIME TIME')
+    if flags.get('is_fanatics'):     parts.append('⚠️ FANATICS')
+    if flags.get('is_standard_plus'):    parts.append('⭐ STD+')
+    if flags.get('ncaab_ml_overnight'):  parts.append('🌙 OVERNIGHT EDGE')
+    if flags.get('prop_blacklisted'):    parts.append('🚫 PROP BLACKLISTED')
     return '  |  '.join(parts) if parts else '—'
 
 
 # ─────────────────────────────────────────────────────────────
-# DATA CLEANING  (shared between dashboard Pull and any batch re-import)
+# DATA CLEANING
 # ─────────────────────────────────────────────────────────────
 
 def clean_raw_df(df):
     """
-    Strip malformed rows that sneak in from Google Sheets import errors.
+    Strip malformed rows from import errors.
     Normalises column names, filters to valid leagues/books, parses profit.
-    Returns cleaned DataFrame.
     """
     df = df.copy()
     df.columns = df.columns.str.lower().str.strip()
 
-    # Drop rows where league is not a real league (catches ' Prophet"', '1004.93', etc.)
     if 'league' in df.columns:
         before = len(df)
         df = df[df['league'].isin(VALID_LEAGUES)]
@@ -686,12 +714,10 @@ def clean_raw_df(df):
         if dropped:
             print(f"clean_raw_df: dropped {dropped} rows with invalid league values")
 
-    # Drop DFS books
     if 'play_book' in df.columns:
         df = df[~df['play_book'].isin(DFS_BOOKS)]
         df = df[df['play_book'].notna()]
 
-    # Normalise profit column to float
     if 'profit' in df.columns:
         df['profit'] = pd.to_numeric(
             df['profit'].astype(str)
@@ -700,7 +726,6 @@ def clean_raw_df(df):
             errors='coerce'
         ).fillna(0.0)
 
-    # Parse timestamps
     if 'timestamp' in df.columns:
         df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
 
@@ -716,19 +741,17 @@ def add_derived_columns(df):
 
     df['odds_val']      = df['play_odds'].apply(parse_odds_val)
     df['odds_bucket']   = df['odds_val'].apply(get_odds_bucket)
-    df['bet_type']      = df.apply(lambda r: categorize_bet(r.get('market',''), r.get('play_selection','')), axis=1)
+    df['bet_type']      = df.apply(lambda r: categorize_bet(r.get('market', ''), r.get('play_selection', '')), axis=1)
     df['bet_side']      = df['play_selection'].apply(get_bet_side)
-    df['prop_cat']      = df.apply(lambda r: extract_prop_category(r.get('market','')) if r['bet_type'] == 'Player Prop' else '', axis=1)
+    df['prop_cat']      = df.apply(lambda r: extract_prop_category(r.get('market', '')) if r['bet_type'] == 'Player Prop' else '', axis=1)
     df['consensus']     = df['sharp_book'].astype(str).str.split(',').str.len().fillna(1).astype(int)
     df['primary_sharp'] = df['sharp_book'].astype(str).str.split(',').str[0].str.strip().str.strip('"')
     df['is_prop_under'] = (df['bet_type'] == 'Player Prop') & (df['bet_side'] == 'Under')
     df['arb_pct']       = df.apply(lambda r: calculate_arb_percent(r.get('play_odds', 0), r.get('sharp_odds', 0)), axis=1)
 
-    # Tier — classify_tier returns (tier, flags); we only need tier for the df column
     tiers = df.apply(lambda r: classify_tier(r.to_dict())[0], axis=1)
     df['tier'] = tiers
 
-    # Combo label for leaderboard
     def _combo(r):
         league = str(r.get('league', ''))
         bt, side, pc = r['bet_type'], r['bet_side'], r['prop_cat']
