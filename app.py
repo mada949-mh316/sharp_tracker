@@ -182,6 +182,7 @@ st.sidebar.subheader("Quick Presets")
 preset = st.sidebar.radio("", [
     "All Bets","NBA Props Only","3+ Consensus Only",
     "Exclude Fanatics","Best Edges (DIAMOND + GOLD)","Prop Unders Only",
+    "Alerted Bets Only"
 ], label_visibility="collapsed")
 
 st.sidebar.markdown("**Date Range**")
@@ -226,6 +227,12 @@ elif preset == "3+ Consensus Only":    df_f = df_f[df_f['consensus']>=3]
 elif preset == "Exclude Fanatics":     df_f = df_f[df_f['play_book']!='Fanatics']
 elif preset == "Best Edges (DIAMOND + GOLD)": df_f = df_f[df_f['tier'].isin(['DIAMOND','GOLD'])]
 elif preset == "Prop Unders Only":     df_f = df_f[df_f['is_prop_under']]
+elif preset == "Alerted Bets Only":
+    if 'alerted' in df_f.columns:
+        df_f = df_f[df_f['alerted'] == True]
+    else:
+        st.sidebar.warning("No 'alerted' column found in database.")
+
 if len(date_range)==2:
     df_f = df_f[(df_f['timestamp'].dt.date>=date_range[0])&(df_f['timestamp'].dt.date<=date_range[1])]
 df_f = df_f[df_f['league'].isin(sel_leagues)]
