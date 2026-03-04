@@ -88,7 +88,7 @@ INSERT_SQL = """
     INSERT INTO bets (
         id, timestamp, league, matchup, market, play_selection,
         play_odds, play_book, sharp_odds, sharp_book,
-        liquidity, wager, result, profit, status, edge_score, gem_score
+        liquidity, wager, result, profit, status, edge_score, gem_score, alerted
     )
     VALUES %s
     ON CONFLICT ON CONSTRAINT bets_natural_key DO NOTHING
@@ -141,6 +141,7 @@ def insert_bets(bets_list: list):
             str(b.get('status', 'Open')),
             edge_score,
             gem_score_val,
+            bool(b.get('alerted', False))
         ))
 
     with get_conn() as conn:
@@ -212,7 +213,7 @@ def load_bets(
         SELECT id, timestamp, league, matchup, market, play_selection,
                play_odds, play_book, sharp_odds, sharp_book,
                liquidity, wager, result, profit, status,
-               edge_score, gem_score
+               edge_score, gem_score, alerted
         FROM bets
         WHERE {where}
         {order}
@@ -232,7 +233,7 @@ def load_bets_date_range(start_date, end_date) -> pd.DataFrame:
         SELECT id, timestamp, league, matchup, market, play_selection,
                play_odds, play_book, sharp_odds, sharp_book,
                liquidity, wager, result, profit, status,
-               edge_score, gem_score
+               edge_score, gem_score, alerted
         FROM bets
         WHERE timestamp >= %s AND timestamp < %s
         ORDER BY timestamp DESC
