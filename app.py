@@ -1000,9 +1000,12 @@ with tab_edge:
 
 
 # ─── TWROI SIMULATOR ─────────────────────────────────────────
+# ─── TWROI SIMULATOR ─────────────────────────────────────────
 with tab_sim:
     st.subheader("🧪 Historical TWROI Simulator")
     st.caption("Runs a point-in-time simulation to see how your profit and ROI change if you strictly require positive TWROI and positive Book TWROI.")
+    
+    st.info("💡 **Required:** Set the **Data Window** in the left sidebar to **'All time'** before running. If you restrict the data, older bets won't have enough history to calculate their 30-day TWROI accurately!")
 
     sim_c1, sim_c2 = st.columns(2)
     group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket"], horizontal=True)
@@ -1011,38 +1014,32 @@ with tab_sim:
     default_start = datetime.now().replace(day=1).date()
     start_date = sim_c2.date_input("Simulation Start Date", value=default_start)
 
-    if st.button("▶️ Run Historical Simulation", type="primary"):
+    if st.button("▶️ Run Historical Simulation on Current Filters", type="primary"):
         with st.spinner("Running point-in-time calculations (this takes a few seconds)..."):
             
             # 1. Prep data
-            df_sim = df[df['status'].isin(['Won', 'Lost'])].copy()
-            df_sim['timestamp'] = pd.to_datetime(df_sim['timestamp'], utc=True)
-            df_sim = df_sim.sort_values('timestamp')
+            # HISTORY: We use `df` (the full database) so we have maximum historical lookback context.
+            hist_df = df[df['status'].isin(['Won', 'Lost', 'Push'])].copy()
+            hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'], utc=True)
             
-            # Derive side and type for the grouping logic
-            df_sim['_side'] = df_sim['play_selection'].apply(lambda x: 'Under' if 'under' in str(x).lower() else ('Over' if 'over' in str(x).lower() else 'Other'))
-            def get_t(m):
-                m = str(m).lower()
-                if 'player' in m: return 'Player Prop'
-                if 'money' in m: return 'Moneyline'
-                if 'spread' in m: return 'Point Spread'
-                if 'total' in m: return 'Total'
-                return 'Other'
-            df_sim['_type'] = df_sim['market'].apply(get_t)
+            # TARGETS: We use `df_f` so it respects your "Alerted Bets" or "NBA" sidebar filters.
+            target_bets = df_f[df_f['status'].isin(['Won', 'Lost'])].copy()
+            target_bets['timestamp'] = pd.to_datetime(target_bets['timestamp'], utc=True)
+            target_bets = target_bets.sort_values('timestamp')
             
             # Grouping dimension
             if group_by_opt == "Edge Score Bucket":
-                df_sim['sim_group'] = pd.cut(df_sim['edge_score'], 
+                target_bets['sim_group'] = pd.cut(target_bets['edge_score'], 
                                              bins=[-1, 35, 54, 69, 100], 
                                              labels=['<35 (Avoid/Lean)', '35-54 (Fair)', '55-69 (Good)', '70+ (High)'])
             else:
-                df_sim['sim_group'] = df_sim['tier'].fillna("Unknown")
+                target_bets['sim_group'] = target_bets['tier'].fillna("Unknown")
 
             target_dt = pd.to_datetime(start_date, utc=True)
-            target_bets = df_sim[df_sim['timestamp'] >= target_dt].copy()
+            target_bets = target_bets[target_bets['timestamp'] >= target_dt]
 
             if target_bets.empty:
-                st.warning("No settled bets found after this date.")
+                st.warning("No settled bets found in your current filter after this date.")
             else:
                 progress_bar = st.progress(0)
                 total_bets = len(target_bets)
@@ -1054,11 +1051,14 @@ with tab_sim:
                     if i % 50 == 0:
                         progress_bar.progress(min(i / total_bets, 1.0))
                         
-                    past_bets = df_sim[df_sim['timestamp'] < bet['timestamp']]
+                    # Lookback context uses the FULL database
+                    past_bets = hist_df[hist_df['timestamp'] < bet['timestamp']]
+                    
+                    # Use the native bet_type and bet_side from shared_logic
                     subset = past_bets[
                         (past_bets['league'] == bet['league']) &
-                        (past_bets['_type'] == bet['_type']) &
-                        (past_bets['_side'] == bet['_side'])
+                        (past_bets['bet_type'] == bet['bet_type']) &
+                        (past_bets['bet_side'] == bet['bet_side'])
                     ]
                     
                     t = bet['timestamp']
@@ -1078,7 +1078,8 @@ with tab_sim:
                     
                     bk_twroi = (calc_roi_sim(bk7_df)*0.5) + (calc_roi_sim(bk14_df)*0.3) + (calc_roi_sim(bk30_df)*0.2)
                     
-                    passed_filter = (twroi > 0) and (bk_twroi > 0)
+                    # Require minimum 10 bets in the 30-day window to validate the edge
+                    passed_filter = (twroi > 0) and (bk_twroi > 0) and (len(s30_df) >= 10)
                     
                     results.append({
                         'group': bet['sim_group'],
