@@ -122,6 +122,12 @@ GEM_SCORE_BUCKETS = [
     (54, 56, 'BET 1u',    '#4ade80'),
     (56, 70, 'BET 0.25u', '#00ff9f'),
 ]
+SMASH_SCORE_BUCKETS = [
+    (0,  52, 'SKIP (<52)',   '#ef4444'),
+    (52, 55, 'LEAN (52-55)', '#f59e0b'),
+    (55, 58, 'PLAY (55-58)', '#4ade80'),
+    (58, 101, 'SMASH (58+)', '#00ff9f'),
+]
 
 def score_bucket_roi(df, score_col, buckets, min_n=10):
     settled = df[df['status'].isin(['Won','Lost'])].dropna(subset=[score_col])
@@ -225,11 +231,19 @@ HAS_GEM_SCORE_SIDEBAR = 'gem_score' in df.columns and df['gem_score'].notna().su
 if HAS_GEM_SCORE_SIDEBAR:
     st.sidebar.markdown("**Gem Score Range**")
     gc1, gc2 = st.sidebar.columns(2)
-    # Defaulting max to 100 so it doesn't filter by default, but you can set it to 56 to avoid traps
     min_gem = gc1.number_input("Min Gem", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key="min_gem")
     max_gem = gc2.number_input("Max Gem", value=100.0, min_value=0.0, max_value=100.0, step=1.0, key="max_gem")
 else:
     min_gem, max_gem = 0.0, 100.0
+
+HAS_SMASH_SCORE_SIDEBAR = 'smash_score' in df.columns and df['smash_score'].notna().sum() > 0
+if HAS_SMASH_SCORE_SIDEBAR:
+    st.sidebar.markdown("**Smash Score Range**")
+    sc1, sc2 = st.sidebar.columns(2)
+    min_smash = sc1.number_input("Min Smash", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key="min_smash")
+    max_smash = sc2.number_input("Max Smash", value=100.0, min_value=0.0, max_value=100.0, step=1.0, key="max_smash")
+else:
+    min_smash, max_smash = 0.0, 100.0
     
 # ── Apply filters ──
 df_f = df.copy()
@@ -257,12 +271,15 @@ if HAS_MY_SCORE_SIDEBAR and (min_edge > 0 or max_edge < 100):
     df_f = df_f[df_f['edge_score'].notna() & (df_f['edge_score'] >= min_edge) & (df_f['edge_score'] <= max_edge)]
 if HAS_GEM_SCORE_SIDEBAR and (min_gem > 0.0 or max_gem < 100.0):
     df_f = df_f[df_f['gem_score'].notna() & (df_f['gem_score'] >= min_gem) & (df_f['gem_score'] <= max_gem)]
+if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
+    df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
 
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
 # ── Score column detection ──
 HAS_MY_SCORE  = 'edge_score' in df_f.columns and df_f['edge_score'].notna().sum() > 0
 HAS_GEM_SCORE = 'gem_score'  in df_f.columns and df_f['gem_score'].notna().sum() > 0
+HAS_SMASH_SCORE = 'smash_score' in df_f.columns and df_f['smash_score'].notna().sum() > 0
 
 # ── Top metrics ──
 total_profit  = closed['profit'].sum() if not closed.empty else 0
@@ -298,7 +315,7 @@ with tab_log:
     base_cols = ['timestamp','tier','league','matchup','bet_type','prop_cat',
                  'play_selection','bet_side','play_odds','play_book',
                  'primary_sharp','consensus','status','profit']
-    score_cols = [c for c in ['edge_score','gem_score'] if c in df_f.columns and df_f[c].notna().any()]
+    score_cols = [c for c in ['edge_score','gem_score','smash_score'] if c in df_f.columns and df_f[c].notna().any()]
     show_cols  = [c for c in base_cols + score_cols if c in df_f.columns]
 
     col_config = {
@@ -313,6 +330,9 @@ with tab_log:
     if HAS_GEM_SCORE:
         col_config["gem_score"] = st.column_config.ProgressColumn(
             "Gem Score", min_value=0, max_value=70, format="%.1f")
+    if HAS_SMASH_SCORE:
+        col_config["smash_score"] = st.column_config.ProgressColumn(
+            "Smash Score", min_value=0, max_value=100, format="%.1f")
 
     st.dataframe(df_f[show_cols].sort_values('timestamp', ascending=False),
                  use_container_width=True, column_config=col_config)
@@ -745,7 +765,7 @@ with tab_edge:
     st.subheader("🎯 Edge Score Analysis")
     st.caption("Validating whether higher scores actually predict better outcomes on your real bets.")
 
-    if not HAS_MY_SCORE and not HAS_GEM_SCORE:
+    if not HAS_MY_SCORE and not HAS_GEM_SCORE and not HAS_SMASH_SCORE:
         st.info(
             "No edge scores in the database yet. "
             "Scores are recorded on new bets as they are ingested by the tracker. "
@@ -763,7 +783,7 @@ with tab_edge:
     st.markdown("### 📊 Score Bucket → Actual ROI")
     st.caption("The core validation: do higher scores deliver higher ROI on your settled bets?")
 
-    val_c1, val_c2 = st.columns(2)
+    val_c1, val_c2, val_c3 = st.columns(3)
 
     with val_c1:
         if HAS_MY_SCORE:
@@ -802,6 +822,23 @@ with tab_edge:
                 fig_gv.update_layout(**LAYOUT, title="Gem Edge Score → ROI", height=320, yaxis_title="ROI (%)")
                 st.plotly_chart(fig_gv, use_container_width=True)
 
+    with val_c3:
+        if HAS_SMASH_SCORE:
+            sbkt = score_bucket_roi(settled_e, 'smash_score', SMASH_SCORE_BUCKETS, min_n=10)
+            if not sbkt.empty:
+                fig_sv = go.Figure(go.Bar(
+                    x=sbkt['bucket'], y=sbkt['roi'],
+                    marker_color=sbkt['color'],
+                    text=[f"{r:+.1f}%<br>N={n:,}" for r,n in zip(sbkt['roi'],sbkt['n'])],
+                    textposition='outside', textfont=dict(size=11)
+                ))
+                fig_sv.add_hline(y=0, line_color='#30363d', line_width=2)
+                fig_sv.add_hline(y=baseline_roi, line_color='#00ffcc', line_dash='dash',
+                                 line_width=1, annotation_text=f"baseline {baseline_roi:+.1f}%",
+                                 annotation_position="bottom right")
+                fig_sv.update_layout(**LAYOUT, title="Smash Score → ROI", height=320, yaxis_title="ROI (%)")
+                st.plotly_chart(fig_sv, use_container_width=True)
+
     st.markdown("---")
 
     # ── 2. SCORE DISTRIBUTION OVER TIME ─────────────────────
@@ -825,11 +862,18 @@ with tab_edge:
         wkg['avg_norm'] = wkg['avg'] / 70 * 100
         fig_time.add_trace(go.Scatter(x=wkg['week'],y=wkg['avg_norm'],name='Gem Score (norm. to 100)',
             line=dict(color='#f59e0b',width=2),mode='lines+markers'))
+    if HAS_SMASH_SCORE:
+        wks = time_df.dropna(subset=['smash_score']).groupby('week')['smash_score'].agg(['mean','count']).reset_index()
+        wks.columns=['week','avg','n']
+        wks = wks[wks['n']>=5]
+        fig_time.add_trace(go.Scatter(x=wks['week'],y=wks['avg'],name='Smash Score (avg)',
+            line=dict(color='#00ffcc',width=2),mode='lines+markers'))
+
     fig_time.update_layout(**LAYOUT,title="Weekly Average Score",height=300,
-                            yaxis_title="Score (both on 0-100 scale)",xaxis_tickangle=-30)
+                            yaxis_title="Score (scaled)",xaxis_tickangle=-30)
     st.plotly_chart(fig_time, use_container_width=True)
 
-    hist_c1, hist_c2 = st.columns(2)
+    hist_c1, hist_c2, hist_c3 = st.columns(3)
     with hist_c1:
         if HAS_MY_SCORE:
             fig_h = go.Figure(go.Histogram(x=df_f['edge_score'].dropna(),nbinsx=20,
@@ -850,6 +894,16 @@ with tab_edge:
             fig_gh.update_layout(**LAYOUT,title="Gem Score Distribution",height=260,
                                   xaxis_title="Score",yaxis_title="# Bets")
             st.plotly_chart(fig_gh, use_container_width=True)
+    with hist_c3:
+        if HAS_SMASH_SCORE:
+            fig_sh = go.Figure(go.Histogram(x=df_f['smash_score'].dropna(),nbinsx=20,
+                marker_color='#00ffcc',opacity=0.8))
+            for lo,_,lbl,color in SMASH_SCORE_BUCKETS[1:]:
+                fig_sh.add_vline(x=lo,line_color=color,line_dash='dash',line_width=1,
+                    annotation_text=lbl,annotation_position="top right",annotation_font_size=9)
+            fig_sh.update_layout(**LAYOUT,title="Smash Score Distribution",height=260,
+                                  xaxis_title="Score",yaxis_title="# Bets")
+            st.plotly_chart(fig_sh, use_container_width=True)
 
     st.markdown("---")
 
@@ -905,14 +959,9 @@ with tab_edge:
 
     st.markdown("---")
 
-    # ── 4. MY SCORE vs GEM SCORE ─────────────────────────────
-    st.markdown("### ⚖️ My Score vs Gem Score — Head to Head")
-    st.caption(
-        "**Correlation: ~0.15** — these two scores measure almost entirely different things. "
-        "My score uses historical book × market lookup tables. "
-        "Gem uses a logistic regression across all features. "
-        "When both agree it's the highest-conviction signal."
-    )
+    # ── 4. MY SCORE vs GEM SCORE vs SMASH SCORE ──────────────
+    st.markdown("### ⚖️ Model Comparison — Head to Head")
+    st.caption("How do the models stack up when filtering your real bets?")
 
     if HAS_MY_SCORE and HAS_GEM_SCORE:
         both = settled_e.dropna(subset=['edge_score','gem_score']).copy()
@@ -932,38 +981,6 @@ with tab_edge:
             fig_sc.update_layout(**LAYOUT, height=400)
             st.plotly_chart(fig_sc, use_container_width=True)
 
-            st.markdown("**Quadrant ROI — When Both Models Agree**")
-            MY_T, GEM_T = 45, 54
-            both_good = both[(both['edge_score']>=MY_T)&(both['gem_score']>=GEM_T)]
-            my_only   = both[(both['edge_score']>=MY_T)&(both['gem_score']< GEM_T)]
-            gem_only  = both[(both['edge_score']< MY_T)&(both['gem_score']>=GEM_T)]
-            both_skip = both[(both['edge_score']< MY_T)&(both['gem_score']< GEM_T)]
-
-            q1,q2,q3,q4 = st.columns(4)
-            
-            def quad_metric(sub, label, col):
-                if len(sub) < 5:
-                    col.metric(label, "N/A", f"N={len(sub)}")
-                    return
-                profit = sub['profit']
-                if isinstance(profit, pd.DataFrame):
-                    profit = profit.iloc[:, 0]
-                profit = pd.to_numeric(profit, errors='coerce').fillna(0.0)
-                r = (float(profit.sum()) / (len(sub) * float(UNIT_SIZE))) * 100
-                col.metric(label, f"{r:+.1f}% ROI", f"N={len(sub):,} bets")
-
-            both_good = both[(both['edge_score']>=MY_T)&(both['gem_score']>=GEM_T)].copy()
-            my_only   = both[(both['edge_score']>=MY_T)&(both['gem_score']< GEM_T)].copy()
-            gem_only  = both[(both['edge_score']< MY_T)&(both['gem_score']>=GEM_T)].copy()
-            both_skip = both[(both['edge_score']< MY_T)&(both['gem_score']< GEM_T)].copy()
-
-            # Re-enforce clean profit column on each slice
-            for _df in [both_good, my_only, gem_only, both_skip]:
-                _df['profit'] = pd.to_numeric(
-                    _df['profit'].iloc[:, 0] if isinstance(_df['profit'], pd.DataFrame) else _df['profit'],
-                    errors='coerce'
-                ).fillna(0.0).astype(float)
-
             st.markdown("**Cumulative Profit: Which Filter Wins?**")
             ts = both.sort_values('timestamp').copy()
             
@@ -971,13 +988,23 @@ with tab_edge:
             prof_data_ts = ts['profit'].iloc[:, 0] if isinstance(ts['profit'], pd.DataFrame) else ts['profit']
             ts['safe_profit'] = pd.to_numeric(prof_data_ts, errors='coerce').fillna(0.0).astype(float)
             
+            MY_T, GEM_T = 45, 54
             ts['pnl_both'] = ts.apply(lambda r: float(r['safe_profit']) if (r['edge_score']>=MY_T and r['gem_score']>=GEM_T) else 0.0, axis=1).cumsum()
             ts['pnl_my']   = ts.apply(lambda r: float(r['safe_profit']) if r['edge_score']>=MY_T else 0.0, axis=1).cumsum()
             ts['pnl_gem']  = ts.apply(lambda r: float(r['safe_profit']) if r['gem_score']>=GEM_T else 0.0, axis=1).cumsum()
+            
+            # Add Smash Score to the race if it exists
+            if HAS_SMASH_SCORE:
+                ts['pnl_smash'] = ts.apply(lambda r: float(r['safe_profit']) if pd.notna(r.get('smash_score')) and r.get('smash_score', 0)>=55 else 0.0, axis=1).cumsum()
+            
             ts['pnl_all']  = ts['safe_profit'].cumsum()
 
             fig_cum = go.Figure()
-            fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_both'],name='✅ Both agree',
+            if HAS_SMASH_SCORE:
+                fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_smash'],name='🤖 Smash score ≥55',
+                    line=dict(color='#00ffcc',width=2)))
+            
+            fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_both'],name='✅ Both agree (My+Gem)',
                 line=dict(color='#00ff9f',width=2)))
             fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_my'],name='📊 My score ≥45',
                 line=dict(color='#4ade80',width=1,dash='dot')))
@@ -998,21 +1025,29 @@ with tab_edge:
     # ── Summary metrics ─────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📋 Quick Summary")
-    sm1,sm2,sm3,sm4 = st.columns(4)
+    
+    # Dynamic columns based on which scores exist to keep it clean
+    cols = st.columns(6)
+    idx = 0
     if HAS_MY_SCORE:
         n_scored   = df_f['edge_score'].notna().sum()
         n_high     = (df_f['edge_score']>=65).sum()
-        sm1.metric("Bets with Score",  f"{n_scored:,}")
-        sm2.metric("High Conf (65+)",  f"{n_high:,}",
-                    delta=f"{n_high/max(n_scored,1)*100:.0f}% of scored")
+        cols[idx].metric("Bets with Score",  f"{n_scored:,}")
+        cols[idx+1].metric("High Conf (65+)",  f"{n_high:,}", delta=f"{n_high/max(n_scored,1)*100:.0f}% of scored")
+        idx += 2
     if HAS_GEM_SCORE:
         n_gem_bet  = (df_f['gem_score']>=54).sum()
         n_gem_t1   = ((df_f['gem_score']>=54)&(df_f['gem_score']<56)).sum()
-        sm3.metric("Gem BET signals",  f"{n_gem_bet:,}")
-        sm4.metric("Gem Tier 1 (54-56)",f"{n_gem_t1:,}", delta="1-unit signals")
+        cols[idx].metric("Gem BET signals",  f"{n_gem_bet:,}")
+        cols[idx+1].metric("Gem Tier 1 (54-56)",f"{n_gem_t1:,}", delta="1-unit signals")
+        idx += 2
+    if HAS_SMASH_SCORE:
+        n_smash_play   = (df_f['smash_score']>=55).sum()
+        n_smash_strong = (df_f['smash_score']>=58).sum()
+        cols[idx].metric("Smash PLAY (55+)",  f"{n_smash_play:,}")
+        cols[idx+1].metric("Smash STRONG (58+)",f"{n_smash_strong:,}", delta="Top tier signals")
 
 
-# ─── TWROI SIMULATOR ─────────────────────────────────────────
 # ─── TWROI SIMULATOR ─────────────────────────────────────────
 with tab_sim:
     st.subheader("🧪 Historical TWROI Simulator")
@@ -1021,7 +1056,7 @@ with tab_sim:
     st.info("💡 **Required:** Set the **Data Window** in the left sidebar to **'All time'** before running. If you restrict the data, older bets won't have enough history to calculate their 30-day TWROI accurately!")
 
     sim_c1, sim_c2 = st.columns(2)
-    group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket"], horizontal=True)
+    group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket", "Smash Score Bucket"], horizontal=True)
     
     # Default to beginning of the month
     default_start = datetime.now().replace(day=1).date()
@@ -1045,6 +1080,10 @@ with tab_sim:
                 target_bets['sim_group'] = pd.cut(target_bets['edge_score'], 
                                              bins=[-1, 35, 54, 69, 100], 
                                              labels=['<35 (Avoid/Lean)', '35-54 (Fair)', '55-69 (Good)', '70+ (High)'])
+            elif group_by_opt == "Smash Score Bucket":
+                target_bets['sim_group'] = pd.cut(target_bets['smash_score'], 
+                                             bins=[-1, 52, 55, 58, 100], 
+                                             labels=['<52 (Skip)', '52-55 (Lean)', '55-58 (Play)', '58+ (Smash)'])
             else:
                 target_bets['sim_group'] = target_bets['tier'].fillna("Unknown")
 
@@ -1165,6 +1204,7 @@ with st.expander("🛠️ Debug"):
     st.write("Settled rows:", len(closed))
     st.write("Has edge_score:", HAS_MY_SCORE)
     st.write("Has gem_score:", HAS_GEM_SCORE)
+    st.write("Has smash_score:", HAS_SMASH_SCORE)
     st.write("Tier distribution:", df_f['tier'].value_counts().to_dict())
     st.write("Sharp book distribution:", df_f['primary_sharp'].value_counts().to_dict())
     try:
