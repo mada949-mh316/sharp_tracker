@@ -211,15 +211,26 @@ oc1, oc2   = st.sidebar.columns(2)
 min_odds   = oc1.number_input("Min Odds", value=int(df['odds_val'].min()), step=10)
 max_odds   = oc2.number_input("Max Odds", value=int(df['odds_val'].max()), step=10)
 
+
 HAS_MY_SCORE_SIDEBAR = 'edge_score' in df.columns and df['edge_score'].notna().sum() > 0
 if HAS_MY_SCORE_SIDEBAR:
     st.sidebar.markdown("**Edge Score Range**")
     ec1, ec2 = st.sidebar.columns(2)
-    min_edge = ec1.number_input("Min", value=0, min_value=0, max_value=100, step=1, key="min_edge")
-    max_edge = ec2.number_input("Max", value=100, min_value=0, max_value=100, step=1, key="max_edge")
+    min_edge = ec1.number_input("Min Edge", value=0, min_value=0, max_value=100, step=1, key="min_edge")
+    max_edge = ec2.number_input("Max Edge", value=100, min_value=0, max_value=100, step=1, key="max_edge")
 else:
     min_edge, max_edge = 0, 100
 
+HAS_GEM_SCORE_SIDEBAR = 'gem_score' in df.columns and df['gem_score'].notna().sum() > 0
+if HAS_GEM_SCORE_SIDEBAR:
+    st.sidebar.markdown("**Gem Score Range**")
+    gc1, gc2 = st.sidebar.columns(2)
+    # Defaulting max to 100 so it doesn't filter by default, but you can set it to 56 to avoid traps
+    min_gem = gc1.number_input("Min Gem", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key="min_gem")
+    max_gem = gc2.number_input("Max Gem", value=100.0, min_value=0.0, max_value=100.0, step=1.0, key="max_gem")
+else:
+    min_gem, max_gem = 0.0, 100.0
+    
 # ── Apply filters ──
 df_f = df.copy()
 if preset == "NBA Props Only":         df_f = df_f[(df_f['league']=='NBA')&(df_f['bet_type']=='Player Prop')]
@@ -244,6 +255,8 @@ df_f = df_f[(df_f['consensus']>=cons_range[0])&(df_f['consensus']<=cons_range[1]
 df_f = df_f[(df_f['odds_val']>=min_odds)&(df_f['odds_val']<=max_odds)]
 if HAS_MY_SCORE_SIDEBAR and (min_edge > 0 or max_edge < 100):
     df_f = df_f[df_f['edge_score'].notna() & (df_f['edge_score'] >= min_edge) & (df_f['edge_score'] <= max_edge)]
+if HAS_GEM_SCORE_SIDEBAR and (min_gem > 0.0 or max_gem < 100.0):
+    df_f = df_f[df_f['gem_score'].notna() & (df_f['gem_score'] >= min_gem) & (df_f['gem_score'] <= max_gem)]
 
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
