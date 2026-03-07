@@ -449,7 +449,7 @@ with tab_analysis:
         st.plotly_chart(fig_twroi, use_container_width=True)
         st.markdown("---")
 
-       metric = 'roi' if metric_mode=="ROI (%)" else 'profit'
+        metric = 'roi' if metric_mode=="ROI (%)" else 'profit'
         tf = 'roi' if metric=='roi' else 'profit'
         col_a,col_b = st.columns(2)
         with col_a:
