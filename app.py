@@ -449,28 +449,28 @@ with tab_analysis:
         st.plotly_chart(fig_twroi, use_container_width=True)
         st.markdown("---")
 
-        metric = 'roi' if metric_mode=="ROI (%)" else 'profit'
+       metric = 'roi' if metric_mode=="ROI (%)" else 'profit'
         tf = 'roi' if metric=='roi' else 'profit'
         col_a,col_b = st.columns(2)
         with col_a:
             st.subheader("By League")
-            st.plotly_chart(bar(calc_roi(closed,'league',10),'league',metric,text_fmt=tf),use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'league',10),'league',metric,text_fmt=tf),use_container_width=True, key="chart_league")
         with col_b:
             st.subheader("By Bet Type")
-            st.plotly_chart(bar(calc_roi(closed,'bet_type',5),'bet_type',metric,text_fmt=tf),use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'bet_type',5),'bet_type',metric,text_fmt=tf),use_container_width=True, key="chart_bet_type")
         
         col_c,col_d = st.columns(2)
         with col_c:
             st.subheader("By Play Book")
-            st.plotly_chart(bar(calc_roi(closed,'play_book',10),'play_book',metric,text_fmt=tf),use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'play_book',10),'play_book',metric,text_fmt=tf),use_container_width=True, key="chart_playbook")
         with col_d:
             st.subheader("By Sharp Book Signal")
-            st.plotly_chart(bar(calc_roi(closed,'primary_sharp',10),'primary_sharp',metric,text_fmt=tf),use_container_width=True)
+            st.plotly_chart(bar(calc_roi(closed,'primary_sharp',10),'primary_sharp',metric,text_fmt=tf),use_container_width=True, key="chart_sharp")
         
         st.subheader("By Consensus Count")
         cs_stats = calc_roi(closed,'consensus',5).sort_values('consensus')
         cs_stats['consensus'] = cs_stats['consensus'].astype(str)+' books'
-        st.plotly_chart(bar(cs_stats,'consensus',metric,text_fmt=tf,h=240),use_container_width=True)
+        st.plotly_chart(bar(cs_stats,'consensus',metric,text_fmt=tf,h=240),use_container_width=True, key="chart_consensus")
 
         # NEW TIME OF DAY CHART
         st.subheader("By Time of Day (Hour)")
@@ -483,7 +483,7 @@ with tab_analysis:
             fig_hr = bar(hr_stats, 'hour_lbl', metric, text_fmt=tf, h=280)
             # Ensure the x-axis stays chronological, not sorted by size
             fig_hr.update_xaxes(categoryorder='array', categoryarray=hr_stats['hour_lbl'])
-            st.plotly_chart(fig_hr, use_container_width=True)
+            st.plotly_chart(fig_hr, use_container_width=True, key="chart_hour")
 
         # ─── LIQUIDITY ANALYSIS ──────────────────────────────────────
         st.markdown("---")
