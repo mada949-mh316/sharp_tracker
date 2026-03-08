@@ -129,7 +129,7 @@ SMASH_SCORE_BUCKETS = [
     (58, 101, 'SMASH (58+)', '#00ff9f'),
 ]
 
-def score_bucket_roi(df, score_col, buckets, min_n=10):
+def score_bucket_roi(df, score_col, buckets, min_n=2):
     settled = df[df['status'].isin(['Won','Lost'])].dropna(subset=[score_col])
     rows = []
     for lo, hi, lbl, color in buckets:
@@ -344,7 +344,7 @@ with tab_tier:
     if closed.empty:
         st.warning("No settled bets in current filter.")
     else:
-        tier_stats = calc_roi(closed,'tier',min_n=5)
+        tier_stats = calc_roi(closed,'tier',min_n=2)
         tier_stats['tier'] = pd.Categorical(tier_stats['tier'],categories=TIER_ORDER,ordered=True)
         tier_stats = tier_stats.sort_values('tier')
 
@@ -787,7 +787,7 @@ with tab_edge:
 
     with val_c1:
         if HAS_MY_SCORE:
-            bkt = score_bucket_roi(settled_e, 'edge_score', MY_SCORE_BUCKETS, min_n=10)
+            bkt = score_bucket_roi(settled_e, 'edge_score', MY_SCORE_BUCKETS, min_n=2)
             if not bkt.empty:
                 fig_v = go.Figure(go.Bar(
                     x=bkt['bucket'], y=bkt['roi'],
@@ -807,7 +807,7 @@ with tab_edge:
 
     with val_c2:
         if HAS_GEM_SCORE:
-            gbkt = score_bucket_roi(settled_e, 'gem_score', GEM_SCORE_BUCKETS, min_n=10)
+            gbkt = score_bucket_roi(settled_e, 'gem_score', GEM_SCORE_BUCKETS, min_n=2)
             if not gbkt.empty:
                 fig_gv = go.Figure(go.Bar(
                     x=gbkt['bucket'], y=gbkt['roi'],
@@ -824,7 +824,7 @@ with tab_edge:
 
     with val_c3:
         if HAS_SMASH_SCORE:
-            sbkt = score_bucket_roi(settled_e, 'smash_score', SMASH_SCORE_BUCKETS, min_n=10)
+            sbkt = score_bucket_roi(settled_e, 'smash_score', SMASH_SCORE_BUCKETS, min_n=2)
             if not sbkt.empty:
                 fig_sv = go.Figure(go.Bar(
                     x=sbkt['bucket'], y=sbkt['roi'],
