@@ -171,10 +171,8 @@ if df.empty:
     st.stop()
 
 # ── CACHE-BUSTING TYPE SANITIZATION ──
-# Bypasses Streamlit's cache memory to forcefully destroy duplicate columns
 df = df.loc[:, ~df.columns.duplicated()].copy()
 
-# Force numeric fields to native Python floats to prevent math crashes downstream
 if 'profit' in df.columns:
     df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0).astype(float)
 if 'liquidity' in df.columns:
@@ -184,6 +182,18 @@ if 'liquidity' in df.columns:
 # ── Filters ──
 st.sidebar.markdown("---")
 st.sidebar.header("🎛️ Filters")
+
+# ── TOP-LEVEL: Bet Status Scope ──────────────────────────────
+st.sidebar.markdown("**Bet Status Scope**")
+status_scope = st.sidebar.radio(
+    "",
+    ["Exclude Expired", "All Bets (incl. Expired)"],
+    index=0,
+    label_visibility="collapsed",
+    key="status_scope"
+)
+st.sidebar.markdown("---")
+
 st.sidebar.subheader("Quick Presets")
 preset = st.sidebar.radio("", [
     "All Bets","NBA Props Only","3+ Consensus Only",
@@ -244,9 +254,15 @@ if HAS_SMASH_SCORE_SIDEBAR:
     max_smash = sc2.number_input("Max Smash", value=100.0, min_value=0.0, max_value=100.0, step=1.0, key="max_smash")
 else:
     min_smash, max_smash = 0.0, 100.0
-    
+
 # ── Apply filters ──
 df_f = df.copy()
+
+# ── TOP-LEVEL SCOPE FILTER (applied first, before all sub-filters) ──
+if status_scope == "Exclude Expired":
+    df_f = df_f[df_f['status'] != 'Expired']
+
+# ── Preset filters ──
 if preset == "NBA Props Only":         df_f = df_f[(df_f['league']=='NBA')&(df_f['bet_type']=='Player Prop')]
 elif preset == "3+ Consensus Only":    df_f = df_f[df_f['consensus']>=3]
 elif preset == "Exclude Fanatics":     df_f = df_f[df_f['play_book']!='Fanatics']
@@ -287,14 +303,24 @@ total_wagered = len(closed) * UNIT_SIZE
 roi_overall   = (total_profit/total_wagered*100) if total_wagered>0 else 0
 win_rate      = (closed['status']=='Won').sum()/max(len(closed[closed['status']!='Push']),1)*100
 pending_n     = len(df_f[df_f['status'].isin(['Open','Pending'])])
+expired_n     = len(df_f[df_f['status'] == 'Expired'])
 
-c1,c2,c3,c4,c5,c6 = st.columns(6)
+# likely_missed count — only meaningful when expired bets are shown
+if 'likely_missed' in df_f.columns:
+    likely_missed_n = int(df_f[(df_f['status'] == 'Expired') & (df_f['likely_missed'] == True)].shape[0])
+else:
+    likely_missed_n = 0
+
+c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
 c1.metric("Total Bets",  f"{len(df_f):,}")
 c2.metric("Settled",     f"{len(closed):,}")
 c3.metric("Pending",     f"{pending_n:,}")
 c4.metric("Profit",      f"${total_profit:,.0f}", delta=f"{roi_overall:.1f}% ROI")
 c5.metric("Win Rate",    f"{win_rate:.1f}%")
 c6.metric("Filter",      preset if preset!="All Bets" else selected_window)
+c7.metric("Expired",     f"{expired_n:,}",
+          delta=f"{likely_missed_n} likely missed" if likely_missed_n > 0 else None,
+          delta_color="inverse" if likely_missed_n > 0 else "normal")
 st.markdown("---")
 
 
@@ -315,8 +341,12 @@ with tab_log:
     base_cols = ['timestamp','tier','league','matchup','bet_type','prop_cat',
                  'play_selection','bet_side','play_odds','play_book',
                  'primary_sharp','consensus','status','profit']
+    # Show likely_missed in the log when expired bets are included
+    extra_cols = []
+    if status_scope == "All Bets (incl. Expired)" and 'likely_missed' in df_f.columns:
+        extra_cols = ['likely_missed']
     score_cols = [c for c in ['edge_score','gem_score','smash_score'] if c in df_f.columns and df_f[c].notna().any()]
-    show_cols  = [c for c in base_cols + score_cols if c in df_f.columns]
+    show_cols  = [c for c in base_cols + extra_cols + score_cols if c in df_f.columns]
 
     col_config = {
         "profit":    st.column_config.NumberColumn("Profit",  format="$%.2f"),
@@ -324,6 +354,8 @@ with tab_log:
         "consensus": st.column_config.NumberColumn("# Books", width="small"),
         "tier":      st.column_config.TextColumn("Tier",      width="small"),
     }
+    if 'likely_missed' in show_cols:
+        col_config["likely_missed"] = st.column_config.CheckboxColumn("Likely Missed?", width="small")
     if HAS_MY_SCORE:
         col_config["edge_score"] = st.column_config.ProgressColumn(
             "Edge Score", min_value=0, max_value=100, format="%.0f")
@@ -406,7 +438,6 @@ with tab_analysis:
         fig_hm.update_layout(**LAYOUT)
         st.plotly_chart(fig_hm,use_container_width=True)
 
-        # ─── TWROI SNAPSHOT ──────────────────────────────────────────
         st.markdown("---")
         st.subheader("⚖️ Current TWROI Breakdown")
         st.caption("Visualizing the Time-Weighted ROI (50% 7-day, 30% 14-day, 20% 30-day) for your current filters.")
@@ -430,7 +461,6 @@ with tab_analysis:
             'ROI': [roi_30, roi_14, roi_7, calc_twroi]
         })
 
-        # Plot the TWROI waterfall/bar chart
         fig_twroi = go.Figure(go.Bar(
             x=twroi_data['Window'], 
             y=twroi_data['ROI'],
@@ -440,11 +470,8 @@ with tab_analysis:
             textfont=dict(size=13, weight='bold')
         ))
         fig_twroi.add_hline(y=0, line_color='#30363d', line_width=2)
-        
-        # Add a visual highlight box around the Final TWROI
         fig_twroi.add_shape(type="rect", x0=2.5, x1=3.5, y0=min(0, calc_twroi - 2), y1=max(0, calc_twroi + 2),
                             line=dict(color="#58a6ff", width=2, dash="dash"), fillcolor="rgba(0,0,0,0)")
-
         fig_twroi.update_layout(**LAYOUT, height=300, yaxis_title="ROI (%)")
         st.plotly_chart(fig_twroi, use_container_width=True)
         st.markdown("---")
@@ -472,69 +499,54 @@ with tab_analysis:
         cs_stats['consensus'] = cs_stats['consensus'].astype(str)+' books'
         st.plotly_chart(bar(cs_stats,'consensus',metric,text_fmt=tf,h=240),use_container_width=True, key="chart_consensus")
 
-        # NEW TIME OF DAY CHART
         st.subheader("By Time of Day (Hour)")
         closed_hr = closed.copy()
         if 'timestamp' in closed_hr.columns:
             closed_hr['hour'] = closed_hr['timestamp'].dt.hour
-            hr_stats = calc_roi(closed_hr, 'hour', 5).sort_values('hour') # sort chronologically 0-23
+            hr_stats = calc_roi(closed_hr, 'hour', 5).sort_values('hour')
             hr_stats['hour_lbl'] = hr_stats['hour'].apply(lambda h: f"{h%12 or 12} {'AM' if h < 12 else 'PM'}")
-            
             fig_hr = bar(hr_stats, 'hour_lbl', metric, text_fmt=tf, h=280)
-            # Ensure the x-axis stays chronological, not sorted by size
             fig_hr.update_xaxes(categoryorder='array', categoryarray=hr_stats['hour_lbl'])
             st.plotly_chart(fig_hr, use_container_width=True, key="chart_hour")
 
-        # ─── LIQUIDITY ANALYSIS ──────────────────────────────────────
         st.markdown("---")
         st.subheader("💧 Liquidity Sweet Spot")
-        st.caption("Find the exact market depth where your edge is strongest. Too low = noisy limits. Too high = perfectly efficient markets.")
+        st.caption("Find the exact market depth where your edge is strongest.")
         
-        # Filter out missing/zero liquidity for a clean chart
         liq_df = closed[(closed['liquidity'] > 0) & (closed['liquidity'].notna())].copy()
         
         if not liq_df.empty:
             col_l1, col_l2 = st.columns(2)
-            
             with col_l1:
-                # Scatter Plot
                 fig_liq = px.scatter(
-                    liq_df, 
-                    x='liquidity', 
-                    y='profit', 
-                    color='tier',
-                    color_discrete_map=TIER_COLORS,
-                    opacity=0.65,
+                    liq_df, x='liquidity', y='profit', color='tier',
+                    color_discrete_map=TIER_COLORS, opacity=0.65,
                     hover_data={'league': True, 'bet_type': True, 'play_selection': True, 'odds_val': True},
                     title="Every Bet: Profit vs. Liquidity"
                 )
                 fig_liq.add_hline(y=0, line_color='#30363d', line_width=2)
                 fig_liq.update_layout(**LAYOUT, height=350, xaxis_title="Market Liquidity ($)", yaxis_title="Profit ($)")
                 st.plotly_chart(fig_liq, use_container_width=True)
-            
             with col_l2:
-                # Bucketed Bar Chart
                 liq_df['liq_bucket'] = pd.cut(
                     liq_df['liquidity'], 
                     bins=[0, 1000, 2500, 5000, 10000, 100000], 
                     labels=['Under $1k', '$1k - $2.5k', '$2.5k - $5k', '$5k - $10k', '$10k+']
                 )
                 liq_stats = calc_roi(liq_df, 'liq_bucket', 5)
-                # Ensure the buckets display in order
                 liq_stats['liq_bucket'] = pd.Categorical(
                     liq_stats['liq_bucket'], 
                     categories=['Under $1k', '$1k - $2.5k', '$2.5k - $5k', '$5k - $10k', '$10k+'], 
                     ordered=True
                 )
                 liq_stats = liq_stats.sort_values('liq_bucket')
-                
                 metric_to_plot = 'roi' if metric_mode == "ROI (%)" else 'profit'
                 text_format = 'roi' if metric_to_plot == 'roi' else 'profit'
-                
                 fig_liq_bar = bar(liq_stats, 'liq_bucket', metric_to_plot, title="ROI by Liquidity Bucket", text_fmt=text_format, h=350)
                 st.plotly_chart(fig_liq_bar, use_container_width=True)
         else:
             st.info("No liquidity data available for settled bets.")
+
 
 # ─── PROP BREAKDOWN ──────────────────────────────────────────
 with tab_props:
@@ -779,7 +791,6 @@ with tab_edge:
     base_wager = max(len(settled_e) * float(UNIT_SIZE), 1)
     baseline_roi = (base_prof / base_wager) * 100
 
-    # ── 1. SCORE vs ACTUAL ROI ───────────────────────────────
     st.markdown("### 📊 Score Bucket → Actual ROI")
     st.caption("The core validation: do higher scores deliver higher ROI on your settled bets?")
 
@@ -841,9 +852,8 @@ with tab_edge:
 
     st.markdown("---")
 
-    # ── 2. SCORE DISTRIBUTION OVER TIME ─────────────────────
     st.markdown("### 📅 Score Quality Over Time")
-    st.caption("Rising average score = tracker is finding better-quality bets. Flat or falling = signal degrading.")
+    st.caption("Rising average score = tracker is finding better-quality bets.")
 
     time_df = df_f[df_f['timestamp'].notna()].copy()
     time_df['week'] = time_df['timestamp'].dt.to_period('W').astype(str)
@@ -907,9 +917,8 @@ with tab_edge:
 
     st.markdown("---")
 
-    # ── 3. BEST SCORING BOOK × MARKET COMBOS ─────────────────
     st.markdown("### 🏆 Best Scoring Book × Market Combinations")
-    st.caption("Which combos score highest AND deliver real ROI? Color = actual ROI, bar length = avg score.")
+    st.caption("Which combos score highest AND deliver real ROI?")
 
     if HAS_MY_SCORE and not settled_e.empty:
         if 'bet_side' not in settled_e.columns:
@@ -940,13 +949,11 @@ with tab_edge:
                   for s,r,n in zip(combo_s['avg_score'],combo_s['roi'],combo_s['n'])],
             textposition='outside', textfont=dict(size=10),
         ))
-        
         fig_bms.update_layout(**LAYOUT,
             title="Top 20 Combos by Avg Edge Score  (bar color = actual ROI)",
             height=max(380, len(combo_s)*28), xaxis_title="Avg Edge Score"
         )
         fig_bms.update_xaxes(range=[0,100])
-        
         st.plotly_chart(fig_bms, use_container_width=True)
 
         disp = combo_s.copy()
@@ -959,7 +966,6 @@ with tab_edge:
 
     st.markdown("---")
 
-    # ── 4. MY SCORE vs GEM SCORE vs SMASH SCORE ──────────────
     st.markdown("### ⚖️ Model Comparison — Head to Head")
     st.caption("How do the models stack up when filtering your real bets?")
 
@@ -984,7 +990,6 @@ with tab_edge:
             st.markdown("**Cumulative Profit: Which Filter Wins?**")
             ts = both.sort_values('timestamp').copy()
             
-            # EXTREME TYPE SAFETY
             prof_data_ts = ts['profit'].iloc[:, 0] if isinstance(ts['profit'], pd.DataFrame) else ts['profit']
             ts['safe_profit'] = pd.to_numeric(prof_data_ts, errors='coerce').fillna(0.0).astype(float)
             
@@ -993,7 +998,6 @@ with tab_edge:
             ts['pnl_my']   = ts.apply(lambda r: float(r['safe_profit']) if r['edge_score']>=MY_T else 0.0, axis=1).cumsum()
             ts['pnl_gem']  = ts.apply(lambda r: float(r['safe_profit']) if r['gem_score']>=GEM_T else 0.0, axis=1).cumsum()
             
-            # Add Smash Score to the race if it exists
             if HAS_SMASH_SCORE:
                 ts['pnl_smash'] = ts.apply(lambda r: float(r['safe_profit']) if pd.notna(r.get('smash_score')) and r.get('smash_score', 0)>=55 else 0.0, axis=1).cumsum()
             
@@ -1003,7 +1007,6 @@ with tab_edge:
             if HAS_SMASH_SCORE:
                 fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_smash'],name='🤖 Smash score ≥55',
                     line=dict(color='#00ffcc',width=2)))
-            
             fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_both'],name='✅ Both agree (My+Gem)',
                 line=dict(color='#00ff9f',width=2)))
             fig_cum.add_trace(go.Scatter(x=ts['timestamp'],y=ts['pnl_my'],name='📊 My score ≥45',
@@ -1022,11 +1025,9 @@ with tab_edge:
     elif HAS_GEM_SCORE:
         st.info("My edge score not in DB yet.")
 
-    # ── Summary metrics ─────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📋 Quick Summary")
     
-    # Dynamic columns based on which scores exist to keep it clean
     cols = st.columns(6)
     idx = 0
     if HAS_MY_SCORE:
@@ -1053,29 +1054,24 @@ with tab_sim:
     st.subheader("🧪 Historical TWROI Simulator")
     st.caption("Runs a point-in-time simulation to see how your profit and ROI change if you strictly require positive TWROI and positive Book TWROI.")
     
-    st.info("💡 **Required:** Set the **Data Window** in the left sidebar to **'All time'** before running. If you restrict the data, older bets won't have enough history to calculate their 30-day TWROI accurately!")
+    st.info("💡 **Required:** Set the **Data Window** in the left sidebar to **'All time'** before running.")
 
     sim_c1, sim_c2 = st.columns(2)
     group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket", "Smash Score Bucket"], horizontal=True)
     
-    # Default to beginning of the month
     default_start = datetime.now().replace(day=1).date()
     start_date = sim_c2.date_input("Simulation Start Date", value=default_start)
 
     if st.button("▶️ Run Historical Simulation on Current Filters", type="primary"):
         with st.spinner("Running point-in-time calculations (this takes a few seconds)..."):
             
-            # 1. Prep data
-            # HISTORY: We use `df` (the full database) so we have maximum historical lookback context.
             hist_df = df[df['status'].isin(['Won', 'Lost', 'Push'])].copy()
             hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'], utc=True)
             
-            # TARGETS: We use `df_f` so it respects your "Alerted Bets" or "NBA" sidebar filters.
             target_bets = df_f[df_f['status'].isin(['Won', 'Lost'])].copy()
             target_bets['timestamp'] = pd.to_datetime(target_bets['timestamp'], utc=True)
             target_bets = target_bets.sort_values('timestamp')
             
-            # Grouping dimension
             if group_by_opt == "Edge Score Bucket":
                 target_bets['sim_group'] = pd.cut(target_bets['edge_score'], 
                                              bins=[-1, 35, 54, 69, 100], 
@@ -1095,18 +1091,13 @@ with tab_sim:
             else:
                 progress_bar = st.progress(0)
                 total_bets = len(target_bets)
-                
                 results = []
                 
-                # 2. Run point-in-time loop
                 for i, (idx, bet) in enumerate(target_bets.iterrows()):
                     if i % 50 == 0:
                         progress_bar.progress(min(i / total_bets, 1.0))
                         
-                    # Lookback context uses the FULL database
                     past_bets = hist_df[hist_df['timestamp'] < bet['timestamp']]
-                    
-                    # Use the native bet_type and bet_side from shared_logic
                     subset = past_bets[
                         (past_bets['league'] == bet['league']) &
                         (past_bets['bet_type'] == bet['bet_type']) &
@@ -1129,8 +1120,6 @@ with tab_sim:
                     bk7_df  = s7_df[s7_df['play_book'].astype(str).str.contains(str(bet['play_book']), case=False, na=False)]
                     
                     bk_twroi = (calc_roi_sim(bk7_df)*0.5) + (calc_roi_sim(bk14_df)*0.3) + (calc_roi_sim(bk30_df)*0.2)
-                    
-                    # Require minimum 10 bets in the 30-day window to validate the edge
                     passed_filter = (twroi > 0) and (bk_twroi > 0) and (len(s30_df) >= 10)
                     
                     results.append({
@@ -1142,35 +1131,26 @@ with tab_sim:
                 progress_bar.empty()
                 res_df = pd.DataFrame(results)
                 
-                # 3. Aggregate results
                 summary = []
                 for grp in res_df['group'].dropna().unique():
                     grp_bets = res_df[res_df['group'] == grp]
                     if grp_bets.empty: continue
-                    
                     base_n = len(grp_bets)
                     base_prof = grp_bets['profit'].sum()
                     base_roi = (base_prof / (base_n * UNIT_SIZE)) * 100 if base_n > 0 else 0
-                    
                     filt_bets = grp_bets[grp_bets['passed']]
                     filt_n = len(filt_bets)
                     filt_prof = filt_bets['profit'].sum()
                     filt_roi = (filt_prof / (filt_n * UNIT_SIZE)) * 100 if filt_n > 0 else 0
-                    
                     summary.append({
                         'Group': grp,
-                        'Base Bets': base_n,
-                        'Base ROI (%)': base_roi,
-                        'Base Profit': base_prof,
-                        'Filt Bets': filt_n,
-                        'Filt ROI (%)': filt_roi,
-                        'Filt Profit': filt_prof,
+                        'Base Bets': base_n, 'Base ROI (%)': base_roi, 'Base Profit': base_prof,
+                        'Filt Bets': filt_n, 'Filt ROI (%)': filt_roi, 'Filt Profit': filt_prof,
                         'ROI Delta': filt_roi - base_roi
                     })
                 
                 sum_df = pd.DataFrame(summary).sort_values('Base Bets', ascending=False)
                 
-                # 4. Visualize
                 fig_sim = go.Figure()
                 fig_sim.add_trace(go.Bar(
                     x=sum_df['Group'], y=sum_df['Base ROI (%)'],
@@ -1182,26 +1162,28 @@ with tab_sim:
                     name='Filtered ROI (TWROI > 0)', marker_color='#4ade80',
                     text=[f"{r:+.1f}%" for r in sum_df['Filt ROI (%)']], textposition='auto'
                 ))
-                fig_sim.update_layout(**LAYOUT, barmode='group', title=f"Baseline vs Filtered ROI by {group_by_opt}", height=400)
+                fig_sim.update_layout(**LAYOUT, barmode='group',
+                    title=f"Baseline vs Filtered ROI by {group_by_opt}", height=400)
                 st.plotly_chart(fig_sim, use_container_width=True)
                 
-                # Format dataframe for display
                 disp_df = sum_df.copy()
                 disp_df['Base ROI (%)'] = disp_df['Base ROI (%)'].map('{:+.1f}%'.format)
                 disp_df['Filt ROI (%)'] = disp_df['Filt ROI (%)'].map('{:+.1f}%'.format)
                 disp_df['ROI Delta']    = disp_df['ROI Delta'].map('{:+.1f}%'.format)
                 disp_df['Base Profit']  = disp_df['Base Profit'].map('${:,.0f}'.format)
                 disp_df['Filt Profit']  = disp_df['Filt Profit'].map('${:,.0f}'.format)
-                
                 st.dataframe(disp_df, use_container_width=True, hide_index=True)
 
 
 # ─── DEBUG ────────────────────────────────────────────────────
 with st.expander("🛠️ Debug"):
     st.write("Data window:", selected_window)
+    st.write("Status scope:", status_scope)
     st.write("Processed rows:", len(df))
     st.write("Filtered rows:", len(df_f))
     st.write("Settled rows:", len(closed))
+    st.write("Expired rows:", expired_n)
+    st.write("Likely missed:", likely_missed_n)
     st.write("Has edge_score:", HAS_MY_SCORE)
     st.write("Has gem_score:", HAS_GEM_SCORE)
     st.write("Has smash_score:", HAS_SMASH_SCORE)
