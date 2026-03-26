@@ -368,10 +368,15 @@ def categorize_bet(market, selection):
     m, s = str(market).lower(), str(selection).lower()
     if "moneyline" in m: return "Moneyline"
     if "spread" in m or "handicap" in m or "run line" in m or "puck line" in m: return "Point Spread"
+    # MLB pitcher props — must come before "total" check
+    if "pitcher" in m: return "Player Prop"
     if "player" in m or "milestone" in m or "props" in m: return "Player Prop"
-    if any(x in m for x in ["shots", "sog", "assists", "rebounds", "threes", "touchdowns", 
+    if any(x in m for x in ["shots", "sog", "assists", "rebounds", "threes", "touchdowns",
                             "hits", "home runs", "strikeouts", "total bases", "earned runs", "rbi"]):
         return "Player Prop"
+    # MLB totals — distinguish full game vs partial game
+    if "total runs - 1st inning" in m:  return "Total"   # 1st inning total
+    if "total runs - 1st 5" in m:       return "Total"   # 1st 5 innings total
     if "total" in m or "over/under" in m: return "Total"
     if "to score" in s or re.search(r'\d+\+', s): return "Player Prop"
     if "over" in s or "under" in s: return "Total"
@@ -412,12 +417,17 @@ def extract_prop_category(market):
     if "touchdown" in m or "score" in m:                      return "Touchdowns"
     if "double"    in m:                                      return "Double Double"
     if "triple"    in m:                                      return "Triple Double"
-    # --- MLB CATEGORIES ---
+    # --- MLB PITCHER PROPS ---
+    if "pitcher strikeout" in m or "strikeouts" in m:        return "Pitcher Strikeouts"
+    if "pitcher earned runs" in m or "earned runs" in m:     return "Pitcher Earned Runs"
+    if "pitcher hits allowed" in m:                          return "Pitcher Hits Allowed"
+    if "pitcher walks" in m or "walks allowed" in m:         return "Pitcher Walks Allowed"
+    if "pitcher outs" in m or "outs recorded" in m:          return "Pitcher Outs Recorded"
+    # --- MLB PLAYER PROPS ---
     if "home runs" in m or "hr" in m:                        return "Home Runs"
     if "total bases" in m:                                   return "Total Bases"
+    if "hits" in m and "runs" in m and "rbi" in m:           return "Hits+Runs+RBIs"
     if "hits" in m:                                          return "Hits"
-    if "strikeouts" in m or "so" in m or " k" in m:          return "Strikeouts"
-    if "earned runs" in m:                                   return "Earned Runs"
     if "runs" in m:                                          return "Runs"
     if "rbi" in m:                                           return "RBIs"
     if "stolen bases" in m:                                  return "Stolen Bases"
