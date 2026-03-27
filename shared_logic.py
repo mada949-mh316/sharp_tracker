@@ -374,9 +374,9 @@ def categorize_bet(market, selection):
     if any(x in m for x in ["shots", "sog", "assists", "rebounds", "threes", "touchdowns",
                             "hits", "home runs", "strikeouts", "total bases", "earned runs", "rbi"]):
         return "Player Prop"
-    # MLB totals — distinguish full game vs partial game
-    if "total runs - 1st inning" in m:  return "Total"   # 1st inning total
-    if "total runs - 1st 5" in m:       return "Total"   # 1st 5 innings total
+    # MLB totals — each partial game gets its own category
+    if "total runs - 1st inning" in m:  return "Total - 1st Inning"
+    if "total runs - 1st 5" in m:       return "Total - 1st 5 Innings"
     if "total" in m or "over/under" in m: return "Total"
     if "to score" in s or re.search(r'\d+\+', s): return "Player Prop"
     if "over" in s or "under" in s: return "Total"
