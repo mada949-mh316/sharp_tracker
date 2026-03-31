@@ -450,7 +450,7 @@ with tab_analysis:
         st.subheader("⚖️ Current TWROI Breakdown")
         st.caption("Visualizing the Time-Weighted ROI (50% 7-day, 30% 14-day, 20% 30-day) for your current filters.")
         
-        now = pd.Timestamp.now()
+        now = pd.Timestamp.now(tz='US/Eastern')
         s30_df = closed[closed['timestamp'] >= now - pd.Timedelta(days=30)]
         s14_df = closed[closed['timestamp'] >= now - pd.Timedelta(days=14)]
         s7_df  = closed[closed['timestamp'] >= now - pd.Timedelta(days=7)]
