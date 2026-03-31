@@ -51,8 +51,16 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
         return pd.DataFrame()
     df = clean_raw_df(raw)
     df = add_derived_columns(df)
+    
+    # --- TIMEZONE FIX ---
+    # The database stores time in UTC. This converts the entire 
+    # dataframe to Eastern Time so the date picker works perfectly.
+    if 'timestamp' in df.columns:
+        if df['timestamp'].dt.tz is None:
+            df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
+        df['timestamp'] = df['timestamp'].dt.tz_convert('US/Eastern')
+        
     return df
-
 
 def bust_cache():
     fetch_from_db.clear()
