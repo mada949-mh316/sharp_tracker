@@ -67,6 +67,30 @@ def bust_cache():
     st.rerun()
 
 
+@st.cache_data(ttl=300)
+def fetch_parlays() -> pd.DataFrame:
+    try:
+        import psycopg2
+        db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
+        conn = psycopg2.connect(db_url, sslmode='disable')
+        df = pd.read_sql("""
+            SELECT id, created_at, n_legs, book,
+                   leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
+                   leg2_sel, leg2_book, leg2_odds, leg2_market, leg2_league, leg2_tier, leg2_edge, leg2_twroi,
+                   leg3_sel, leg3_book, leg3_odds, leg3_market, leg3_league, leg3_tier, leg3_edge, leg3_twroi,
+                   parlay_odds, ev_pct, status, profit, graded_at
+            FROM parlays
+            ORDER BY created_at DESC
+        """, conn)
+        conn.close()
+        df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
+        df['n_legs'] = df['n_legs'].fillna(2).astype(int)
+        return df
+    except Exception as e:
+        st.error(f"Could not load parlays: {e}")
+        return pd.DataFrame()
+
+
 # ─────────────────────────────────────────────────────────────
 # PLOT HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -336,10 +360,10 @@ st.markdown("---")
 # TABS
 # ─────────────────────────────────────────────────────────────
 (tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
- tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim) = st.tabs([
+ tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays) = st.tabs([
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
-    "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator"
+    "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays"
 ])
 
 
@@ -1066,19 +1090,24 @@ with tab_sim:
 
     sim_c1, sim_c2 = st.columns(2)
     group_by_opt = sim_c1.radio("Group results by:", ["Tier", "Edge Score Bucket", "Smash Score Bucket"], horizontal=True)
-    
+
     default_start = datetime.now().replace(day=1).date()
     start_date = sim_c2.date_input("Simulation Start Date", value=default_start)
 
+    alerted_only = st.checkbox("Alerted bets only (simulate betting everything that fired with positive book & market TWROI)", value=False)
+
     if st.button("▶️ Run Historical Simulation on Current Filters", type="primary"):
         with st.spinner("Running point-in-time calculations (this takes a few seconds)..."):
-            
+
             hist_df = df[df['status'].isin(['Won', 'Lost', 'Push'])].copy()
             hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'], utc=True)
-            
+
             target_bets = df_f[df_f['status'].isin(['Won', 'Lost'])].copy()
             target_bets['timestamp'] = pd.to_datetime(target_bets['timestamp'], utc=True)
             target_bets = target_bets.sort_values('timestamp')
+
+            if alerted_only and 'alerted' in target_bets.columns:
+                target_bets = target_bets[target_bets['alerted'] == True]
             
             if group_by_opt == "Edge Score Bucket":
                 target_bets['sim_group'] = pd.cut(target_bets['edge_score'], 
@@ -1181,6 +1210,122 @@ with tab_sim:
                 disp_df['Base Profit']  = disp_df['Base Profit'].map('${:,.0f}'.format)
                 disp_df['Filt Profit']  = disp_df['Filt Profit'].map('${:,.0f}'.format)
                 st.dataframe(disp_df, use_container_width=True, hide_index=True)
+
+
+# ─── PARLAYS ─────────────────────────────────────────────────
+with tab_parlays:
+    st.subheader("🎰 Parlay Tracker")
+    pdf = fetch_parlays()
+
+    if pdf.empty:
+        st.info("No parlays recorded yet. They'll appear here once the tracker fires its first parlay alert.")
+    else:
+        settled = pdf[pdf['status'].isin(['Won', 'Lost', 'Push'])]
+        open_p  = pdf[pdf['status'] == 'Open']
+
+        # ── Summary metrics ──────────────────────────────────────
+        if not settled.empty:
+            total_n   = len(settled)
+            total_w   = (settled['status'] == 'Won').sum()
+            total_l   = (settled['status'] == 'Lost').sum()
+            total_push= (settled['status'] == 'Push').sum()
+            total_pnl = settled['profit'].sum()
+            total_roi = total_pnl / (total_n * 100) * 100
+
+            mc = st.columns(5)
+            mc[0].metric("Total Parlays", total_n)
+            mc[1].metric("Record", f"{total_w}W / {total_l}L / {total_push}P")
+            mc[2].metric("ROI", f"{total_roi:+.1f}%")
+            mc[3].metric("P&L", f"${total_pnl:+,.0f}", delta=f"{total_pnl/100:+.2f}u")
+            mc[4].metric("Open", len(open_p))
+            st.markdown("---")
+
+            # ── By leg count ────────────────────────────────────
+            st.markdown("**Performance by Parlay Size**")
+            size_rows = []
+            for n in sorted(settled['n_legs'].unique()):
+                sub = settled[settled['n_legs'] == n]
+                n_w = (sub['status'] == 'Won').sum()
+                n_l = (sub['status'] == 'Lost').sum()
+                n_p = (sub['status'] == 'Push').sum()
+                pnl = sub['profit'].sum()
+                roi = pnl / (len(sub) * 100) * 100
+                size_rows.append({
+                    'Size': f"{n}-Leg",
+                    'Count': len(sub),
+                    'W': n_w, 'L': n_l, 'P': n_p,
+                    'Win%': f"{n_w/len(sub)*100:.0f}%",
+                    'ROI': f"{roi:+.1f}%",
+                    'P&L': f"${pnl:+,.0f}",
+                })
+            st.dataframe(pd.DataFrame(size_rows), use_container_width=True, hide_index=True)
+
+            # ── By book ─────────────────────────────────────────
+            st.markdown("**Performance by Book**")
+            book_rows = []
+            for bk in settled['book'].dropna().unique():
+                sub = settled[settled['book'] == bk]
+                if len(sub) < 2: continue
+                n_w = (sub['status'] == 'Won').sum()
+                n_l = (sub['status'] == 'Lost').sum()
+                pnl = sub['profit'].sum()
+                roi = pnl / (len(sub) * 100) * 100
+                book_rows.append({'Book': bk, 'Count': len(sub), 'W': n_w, 'L': n_l,
+                                  'ROI': f"{roi:+.1f}%", 'P&L': f"${pnl:+,.0f}"})
+            if book_rows:
+                st.dataframe(pd.DataFrame(book_rows).sort_values('Count', ascending=False),
+                             use_container_width=True, hide_index=True)
+
+            # ── Cumulative P&L chart ─────────────────────────────
+            st.markdown("**Cumulative P&L (settled parlays)**")
+            chart_df = settled.sort_values('created_at').copy()
+            chart_df['cumulative_pnl'] = chart_df['profit'].cumsum() / 100
+            fig_cum = px.line(chart_df, x='created_at', y='cumulative_pnl',
+                              labels={'created_at': '', 'cumulative_pnl': 'Units'},
+                              color_discrete_sequence=['#9B59B6'])
+            fig_cum.update_layout(**LAYOUT, height=300)
+            fig_cum.add_hline(y=0, line_dash='dash', line_color='#30363d')
+            st.plotly_chart(fig_cum, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Full parlay log ──────────────────────────────────────
+        st.markdown("**Full Parlay Log**")
+        p_filter = st.radio("Filter", ["All", "Open", "Won", "Lost", "Push"],
+                            horizontal=True, key="parlay_filter")
+        show_df = pdf if p_filter == "All" else pdf[pdf['status'] == p_filter]
+
+        def fmt_parlay_row(row):
+            def ostrs(o):
+                if o is None or (isinstance(o, float) and pd.isna(o)): return "—"
+                o = int(o); return f"+{o}" if o >= 0 else str(o)
+            legs = [f"{row['leg1_sel']} ({ostrs(row['leg1_odds'])})",
+                    f"{row['leg2_sel']} ({ostrs(row['leg2_odds'])})"]
+            if row['n_legs'] == 3 and pd.notna(row.get('leg3_sel')):
+                legs.append(f"{row['leg3_sel']} ({ostrs(row['leg3_odds'])})")
+            return " + ".join(legs)
+
+        log_rows = []
+        for _, row in show_df.iterrows():
+            status_emoji = {"Won": "✅", "Lost": "❌", "Push": "⏸️", "Open": "⏳"}.get(row['status'], "")
+            ev = f"{row['ev_pct']:+.1f}%" if pd.notna(row.get('ev_pct')) else "—"
+            pnl = f"${row['profit']:+,.0f}" if row['status'] != 'Open' else "—"
+            log_rows.append({
+                '': status_emoji,
+                'Date': row['created_at'].strftime('%m/%d %H:%M') if pd.notna(row['created_at']) else '—',
+                'Legs': fmt_parlay_row(row),
+                'Size': f"{row['n_legs']}-Leg",
+                'Book': row['book'],
+                'Odds': (f"+{int(row['parlay_odds'])}" if row['parlay_odds'] >= 0 else str(int(row['parlay_odds']))) if pd.notna(row.get('parlay_odds')) else '—',
+                'Est EV': ev,
+                'Status': row['status'],
+                'P&L': pnl,
+            })
+
+        if log_rows:
+            st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No parlays match this filter.")
 
 
 # ─── DEBUG ────────────────────────────────────────────────────
