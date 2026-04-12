@@ -1346,3 +1346,4 @@ with st.expander("🛠️ Debug"):
         st.write("Total in DB:", count_bets())
     except Exception as e:
         st.write("DB count error:", str(e))
+ 
