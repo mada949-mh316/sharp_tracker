@@ -64,31 +64,28 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
 
 def bust_cache():
     fetch_from_db.clear()
+    fetch_parlays.clear()
     st.rerun()
 
 
 @st.cache_data(ttl=300)
 def fetch_parlays() -> pd.DataFrame:
-    try:
-        import psycopg2
-        db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
-        conn = psycopg2.connect(db_url, sslmode='disable')
-        df = pd.read_sql("""
-            SELECT id, created_at, n_legs, book,
-                   leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
-                   leg2_sel, leg2_book, leg2_odds, leg2_market, leg2_league, leg2_tier, leg2_edge, leg2_twroi,
-                   leg3_sel, leg3_book, leg3_odds, leg3_market, leg3_league, leg3_tier, leg3_edge, leg3_twroi,
-                   parlay_odds, ev_pct, status, profit, graded_at
-            FROM parlays
-            ORDER BY created_at DESC
-        """, conn)
-        conn.close()
-        df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
-        df['n_legs'] = df['n_legs'].fillna(2).astype(int)
-        return df
-    except Exception as e:
-        st.error(f"Could not load parlays: {e}")
-        return pd.DataFrame()
+    import psycopg2
+    db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
+    conn = psycopg2.connect(db_url, sslmode='disable')
+    df = pd.read_sql("""
+        SELECT id, created_at, n_legs, book,
+               leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
+               leg2_sel, leg2_book, leg2_odds, leg2_market, leg2_league, leg2_tier, leg2_edge, leg2_twroi,
+               leg3_sel, leg3_book, leg3_odds, leg3_market, leg3_league, leg3_tier, leg3_edge, leg3_twroi,
+               parlay_odds, ev_pct, status, profit, graded_at
+        FROM parlays
+        ORDER BY created_at DESC
+    """, conn)
+    conn.close()
+    df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
+    df['n_legs'] = df['n_legs'].fillna(2).astype(int)
+    return df
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1215,7 +1212,11 @@ with tab_sim:
 # ─── PARLAYS ─────────────────────────────────────────────────
 with tab_parlays:
     st.subheader("🎰 Parlay Tracker")
-    pdf = fetch_parlays()
+    try:
+        pdf = fetch_parlays()
+    except Exception as e:
+        st.error(f"Could not load parlays: {e}")
+        pdf = pd.DataFrame()
 
     if pdf.empty:
         st.info("No parlays recorded yet. They'll appear here once the tracker fires its first parlay alert.")
@@ -1346,4 +1347,3 @@ with st.expander("🛠️ Debug"):
         st.write("Total in DB:", count_bets())
     except Exception as e:
         st.write("DB count error:", str(e))
- 
