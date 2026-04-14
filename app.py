@@ -62,12 +62,6 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
         
     return df
 
-def bust_cache():
-    fetch_from_db.clear()
-    fetch_parlays.clear()
-    st.rerun()
-
-
 @st.cache_data(ttl=300)
 def fetch_parlays() -> pd.DataFrame:
     import psycopg2
@@ -86,6 +80,12 @@ def fetch_parlays() -> pd.DataFrame:
     df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
     df['n_legs'] = df['n_legs'].fillna(2).astype(int)
     return df
+
+
+def bust_cache():
+    fetch_from_db.clear()
+    fetch_parlays.clear()
+    st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
