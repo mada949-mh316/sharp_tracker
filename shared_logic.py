@@ -4,11 +4,9 @@ shared_logic.py — Single source of truth for Smart Money Tracker.
 Imported by both tracker_v9.py (Discord bot) and dashboard_v5.py (Streamlit).
 Any change to tier logic, classification, or thresholds happens here only.
 
-Updated 2026-04-03:
-  - Adjusted GOOD_LIQ to $1-$2000 based on recent ROI analysis.
-  - Expanded PRIME_HOURS to include high-performing early morning and afternoon windows.
-  - Removed "Double Double" from Prop Blacklist.
-  - Removed NCAAB/NCAAF from STANDARD_PLUS rules.
+Updated 2026-04-08:
+  - Polymarket: Removed Moneyline from Whitelist. Added Tennis & NCAAB to Blacklist.
+  - Kalshi: Removed Point Spread from Blacklist. Added Tennis & NCAAB to Blacklist.
 """
 
 import re
@@ -33,8 +31,8 @@ GOOD_ODDS_MAX       = 499
 GOOD_ODDS_UNDER_MIN = -250   
 BAD_ODDS_MIN        = 500
 BAD_ODDS_MAX        = 999
-GOOD_LIQ_MIN        = 1      # Lowered floor to catch <$500 market
-GOOD_LIQ_MAX        = 2000   # Lowered ceiling; volume >$2k showed -0.4% ROI
+GOOD_LIQ_MIN        = 1      
+GOOD_LIQ_MAX        = 2000   
 PRIME_HOURS         = {1, 2, 3, 4, 5, 8, 12, 13, 16, 18, 19, 22} 
 CONSENSUS_THRESHOLD = 3
 
@@ -71,28 +69,30 @@ SHARP_BOOK_MARKET_WHITELIST = {
     ("Prophet",   "Player Prop"),
     ("Pinnacle",  "Point Spread"),
     ("Pinnacle",  "Total"),
-    ("Polymarket","Moneyline"),
     ("NoVigApp",  "Total"),
     ("NoVigApp",  "Moneyline"),
     ("Prophet",   "Total"),
 }
 
 SHARP_BOOK_MARKET_BLACKLIST = {
-    ("Kalshi",   "Point Spread"),
-    ("Kalshi",   "NFL"),
-    ("NoVigApp", "Tennis"),
-    ("Prophet",  "Tennis"),
-    ("Pinnacle", "Tennis"),
-    ("Prophet",  "NCAAF"),
-    ("NoVigApp", "NCAAF"),
-    ("NoVigApp", "Total Games"),
+    ("Kalshi",     "NFL"),
+    ("NoVigApp",   "Tennis"),
+    ("Prophet",    "Tennis"),
+    ("Pinnacle",   "Tennis"),
+    ("Prophet",    "NCAAF"),
+    ("NoVigApp",   "NCAAF"),
+    ("NoVigApp",   "Total Games"),
+    ("Kalshi",     "Tennis"),
+    ("Kalshi",     "NCAAB"),
+    ("Polymarket", "Tennis"),
+    ("Polymarket", "NCAAB"),
 }
 
 # Prop categories that are structurally negative within specific leagues.
 PROP_CATEGORY_LEAGUE_BLACKLIST = {
-    ("NFL",    "Touchdowns"),     # -85.5% ROI (N=27), 0% WR — never wins
-    ("NHL",    "Points"),         # -38.3% ROI (N=22)
-    ("Tennis", "Total Games"),    # -23.0% ROI (N=106)
+    ("NFL",    "Touchdowns"),     
+    ("NHL",    "Points"),         
+    ("Tennis", "Total Games"),    
 }
 
 LOW_CONFIDENCE_BOOKS = {"Kalshi"}
@@ -514,7 +514,7 @@ def classify_tier(bet_data):
         'is_fanatics':      is_fanatics,
     }
 
-    if (bad_odds or is_fanatics) and consensus < CONSENSUS_THRESHOLD and not is_prop_under:
+    if bad_odds and consensus < CONSENSUS_THRESHOLD and not is_prop_under:
         return 'WATCH', flags
 
     if consensus >= CONSENSUS_THRESHOLD and good_odds and is_prop_under:
