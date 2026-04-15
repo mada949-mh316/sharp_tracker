@@ -72,7 +72,7 @@ def fetch_parlays() -> pd.DataFrame:
                leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
                leg2_sel, leg2_book, leg2_odds, leg2_market, leg2_league, leg2_tier, leg2_edge, leg2_twroi,
                leg3_sel, leg3_book, leg3_odds, leg3_market, leg3_league, leg3_tier, leg3_edge, leg3_twroi,
-               parlay_odds, ev_pct, status, profit, graded_at
+               parlay_odds, ev_pct, min_odds, status, profit, graded_at
         FROM parlays
         ORDER BY created_at DESC
     """, conn)
@@ -250,6 +250,9 @@ sel_books   = st.sidebar.multiselect("Play Book", all_books, default=all_books)
 sel_types   = st.sidebar.multiselect("Bet Type",
     ['Moneyline','Player Prop','Point Spread','Total'],
     default=['Moneyline','Player Prop','Point Spread','Total'])
+all_prop_cats = sorted(df['prop_cat'].dropna().unique()) if 'prop_cat' in df.columns else []
+sel_prop_cats = st.sidebar.multiselect("Prop Category", all_prop_cats, default=[],
+    placeholder="Type to search (e.g. hits, PRA...)")
 max_cons   = int(df['consensus'].max())
 cons_range = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
 oc1, oc2   = st.sidebar.columns(2)
@@ -310,6 +313,8 @@ df_f = df_f[df_f['tier'].isin(sel_tiers)]
 df_f = df_f[df_f['primary_sharp'].isin(sel_sharps)]
 df_f = df_f[df_f['play_book'].isin(sel_books)]
 df_f = df_f[df_f['bet_type'].isin(sel_types)]
+if sel_prop_cats and 'prop_cat' in df_f.columns:
+    df_f = df_f[df_f['prop_cat'].isin(sel_prop_cats)]
 df_f = df_f[(df_f['consensus']>=cons_range[0])&(df_f['consensus']<=cons_range[1])]
 df_f = df_f[(df_f['odds_val']>=min_odds)&(df_f['odds_val']<=max_odds)]
 if HAS_MY_SCORE_SIDEBAR and (min_edge > 0 or max_edge < 100):
@@ -1311,6 +1316,8 @@ with tab_parlays:
             status_emoji = {"Won": "✅", "Lost": "❌", "Push": "⏸️", "Open": "⏳"}.get(row['status'], "")
             ev = f"{row['ev_pct']:+.1f}%" if pd.notna(row.get('ev_pct')) else "—"
             pnl = f"${row['profit']:+,.0f}" if row['status'] != 'Open' else "—"
+            min_o = row.get('min_odds')
+            min_o_str = (f"+{int(min_o)}" if min_o >= 0 else str(int(min_o))) if pd.notna(min_o) else '—'
             log_rows.append({
                 '': status_emoji,
                 'Date': row['created_at'].strftime('%m/%d %H:%M') if pd.notna(row['created_at']) else '—',
@@ -1319,6 +1326,7 @@ with tab_parlays:
                 'Book': row['book'],
                 'Odds': (f"+{int(row['parlay_odds'])}" if row['parlay_odds'] >= 0 else str(int(row['parlay_odds']))) if pd.notna(row.get('parlay_odds')) else '—',
                 'Est EV': ev,
+                'Play Down To': min_o_str,
                 'Status': row['status'],
                 'P&L': pnl,
             })
