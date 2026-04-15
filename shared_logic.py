@@ -349,12 +349,48 @@ def categorize_bet(market, selection):
     if any(x in m for x in ["shots", "sog", "assists", "rebounds", "threes", "touchdowns",
                             "hits", "home runs", "strikeouts", "total bases", "earned runs", "rbi"]):
         return "Player Prop"
-    if "total runs - 1st inning" in m:  return "Total - 1st Inning"
-    if "total runs - 1st 5" in m:       return "Total - 1st 5 Innings"
     if "total" in m or "over/under" in m: return "Total"
     if "to score" in s or re.search(r'\d+\+', s): return "Player Prop"
     if "over" in s or "under" in s: return "Total"
     return "Moneyline"
+
+
+def extract_total_subtype(market, league=''):
+    """Return a human-readable sub-category for Total bets."""
+    m = str(market).lower()
+    league = str(league).upper()
+
+    # Team-specific totals (any league)
+    if 'team total' in m:
+        return 'Team Total'
+    # MLB pattern: "Total Runs - [Team Name]" means a team total
+    if league == 'MLB' and re.search(r'total runs\s*-\s*\w', m):
+        return 'Team Total'
+
+    # Halves
+    if re.search(r'(1st|first)\s*half', m) or '1h total' in m:
+        return '1st Half'
+    if re.search(r'(2nd|second)\s*half', m) or '2h total' in m:
+        return '2nd Half'
+
+    # MLB innings
+    if re.search(r'(1st|first)\s*5', m) or 'f5' in m:
+        return '1st 5 Innings'
+    if re.search(r'(1st|first)\s*inning', m):
+        return '1st Inning'
+
+    # Quarters
+    if re.search(r'(1st|first)\s*quarter|1q\b', m):  return '1st Quarter'
+    if re.search(r'(2nd|second)\s*quarter|2q\b', m): return '2nd Quarter'
+    if re.search(r'(3rd|third)\s*quarter|3q\b', m):  return '3rd Quarter'
+    if re.search(r'(4th|fourth)\s*quarter|4q\b', m): return '4th Quarter'
+
+    # Periods (NHL / hockey)
+    if re.search(r'(1st|first)\s*period|1p\b', m):   return '1st Period'
+    if re.search(r'(2nd|second)\s*period|2p\b', m):  return '2nd Period'
+    if re.search(r'(3rd|third)\s*period|3p\b', m):   return '3rd Period'
+
+    return 'Full Game'
 
 def get_bet_side(selection):
     s = str(selection).lower()
@@ -651,7 +687,13 @@ def add_derived_columns(df):
     df['odds_bucket']   = df['odds_val'].apply(get_odds_bucket)
     df['bet_type']      = df.apply(lambda r: categorize_bet(r.get('market', ''), r.get('play_selection', '')), axis=1)
     df['bet_side']      = df['play_selection'].apply(get_bet_side)
-    df['prop_cat']      = df.apply(lambda r: extract_prop_category(r.get('market', '')) if r['bet_type'] == 'Player Prop' else '', axis=1)
+    df['prop_cat']      = df.apply(
+        lambda r: (
+            extract_prop_category(r.get('market', ''))   if r['bet_type'] == 'Player Prop'
+            else extract_total_subtype(r.get('market', ''), r.get('league', '')) if r['bet_type'] == 'Total'
+            else ''
+        ), axis=1
+    )
     df['consensus']     = df['sharp_book'].astype(str).str.split(',').str.len().fillna(1).astype(int)
     df['primary_sharp'] = df['sharp_book'].astype(str).str.split(',').str[0].str.strip().str.strip('"')
     df['is_prop_under'] = (df['bet_type'] == 'Player Prop') & (df['bet_side'] == 'Under')
@@ -664,7 +706,7 @@ def add_derived_columns(df):
         league = str(r.get('league', ''))
         bt, side, pc = r['bet_type'], r['bet_side'], r['prop_cat']
         if bt == 'Player Prop': return f"{side} {league} {pc}"
-        if bt == 'Total':       return f"{side} {league} Game Total"
+        if bt == 'Total':       return f"{side} {league} {pc}" if pc else f"{side} {league} Full Game"
         return f"{league} {bt}"
     df['combo'] = df.apply(_combo, axis=1)
 
