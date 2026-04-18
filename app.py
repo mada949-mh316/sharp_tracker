@@ -36,6 +36,10 @@ h1,h2,h3 { font-family: 'IBM Plex Mono', monospace; }
     padding:10px 14px; margin-bottom:8px; font-size:13px; }
 div[data-testid="stTab"] button { font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:1px; }
 section[data-testid="stSidebar"] { background:#0d1117; border-right:1px solid #21262d; }
+/* Prevent profit/ROI values from being clipped in dataframes */
+.ag-cell { white-space: nowrap !important; overflow: visible !important; }
+.ag-cell-value { overflow: visible !important; text-overflow: unset !important; }
+[data-testid="stDataFrame"] .ag-cell { min-width: fit-content !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -251,8 +255,8 @@ sel_types   = st.sidebar.multiselect("Bet Type",
     ['Moneyline','Player Prop','Point Spread','Total'],
     default=['Moneyline','Player Prop','Point Spread','Total'])
 all_prop_cats = sorted(df['prop_cat'].dropna().unique()) if 'prop_cat' in df.columns else []
-sel_prop_cats = st.sidebar.multiselect("Prop Category", all_prop_cats, default=[],
-    placeholder="Type to search (e.g. hits, PRA...)")
+sel_prop_cats = st.sidebar.multiselect("Prop / Total Category", all_prop_cats, default=[],
+    placeholder="e.g. Hits, PRA, Team Total, 1st Half")
 max_cons   = int(df['consensus'].max())
 cons_range = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
 oc1, oc2   = st.sidebar.columns(2)
@@ -383,8 +387,8 @@ with tab_log:
     show_cols  = [c for c in base_cols + extra_cols + score_cols if c in df_f.columns]
 
     col_config = {
-        "profit":    st.column_config.NumberColumn("Profit",  format="$%.2f"),
-        "play_odds": st.column_config.NumberColumn("Odds",    format="%d"),
+        "profit":    st.column_config.NumberColumn("Profit",  format="$%.2f", width="medium"),
+        "play_odds": st.column_config.NumberColumn("Odds",    format="%d",    width="small"),
         "consensus": st.column_config.NumberColumn("# Books", width="small"),
         "tier":      st.column_config.TextColumn("Tier",      width="small"),
     }
