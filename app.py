@@ -29,9 +29,12 @@ html, body, [class*="css"] {
     background-color: #0d1117; color: #e6edf3;
 }
 h1,h2,h3 { font-family: 'IBM Plex Mono', monospace; }
-.stMetric { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:16px; }
-.stMetric label { color:#8b949e !important; font-size:11px !important; letter-spacing:2px;
-    text-transform:uppercase; font-family:'IBM Plex Mono',monospace !important; }
+.stMetric { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:12px 10px; overflow:visible; }
+.stMetric label { color:#8b949e !important; font-size:10px !important; letter-spacing:1.5px;
+    text-transform:uppercase; font-family:'IBM Plex Mono',monospace !important; white-space:nowrap; }
+[data-testid="stMetricValue"] { font-family:'IBM Plex Mono',monospace !important;
+    font-size:1.05rem !important; white-space:nowrap !important; overflow:visible !important; }
+[data-testid="stMetricDelta"] { font-size:0.72rem !important; white-space:nowrap !important; }
 .insight-card { background:#161b22; border-left:3px solid #58a6ff; border-radius:6px;
     padding:10px 14px; margin-bottom:8px; font-size:13px; }
 div[data-testid="stTab"] button { font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:1px; }
