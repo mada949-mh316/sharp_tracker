@@ -294,6 +294,15 @@ if HAS_SMASH_SCORE_SIDEBAR:
 else:
     min_smash, max_smash = 0.0, 100.0
 
+HAS_TWROI_SIDEBAR = 'twroi' in df.columns and df['twroi'].notna().sum() > 0
+if HAS_TWROI_SIDEBAR:
+    st.sidebar.markdown("**TWROI Filter** *(alerted bets only)*")
+    tw1, tw2 = st.sidebar.columns(2)
+    min_twroi    = tw1.number_input("Min Mkt TWROI", value=-100, step=1, format="%d", key="min_twroi")
+    min_bk_twroi = tw2.number_input("Min Bk TWROI",  value=-100, step=1, format="%d", key="min_bk_twroi")
+else:
+    min_twroi, min_bk_twroi = -100, -100
+
 # ── Apply filters ──
 df_f = df.copy()
 
@@ -330,6 +339,10 @@ if HAS_GEM_SCORE_SIDEBAR and (min_gem > 0.0 or max_gem < 100.0):
     df_f = df_f[df_f['gem_score'].notna() & (df_f['gem_score'] >= min_gem) & (df_f['gem_score'] <= max_gem)]
 if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
     df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
+if HAS_TWROI_SIDEBAR and min_twroi > -100:
+    df_f = df_f[df_f['twroi'].notna() & (df_f['twroi'] >= min_twroi)]
+if HAS_TWROI_SIDEBAR and min_bk_twroi > -100:
+    df_f = df_f[df_f['bk_twroi'].notna() & (df_f['bk_twroi'] >= min_bk_twroi)]
 
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
