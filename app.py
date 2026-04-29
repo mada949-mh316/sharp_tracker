@@ -1439,46 +1439,53 @@ with tab_dfs:
         total_l_d = (settled_dfs['status'] == 'Lost').sum()
         push_d    = (settled_dfs['status'] == 'Push').sum()
         wr_d      = total_w_d / max(total_d - push_d, 1) * 100
+        total_pnl_d = settled_dfs['profit'].sum()
+        roi_d       = total_pnl_d / max(total_d * 100, 1) * 100
 
-        dm = st.columns(5)
+        dm = st.columns(6)
         dm[0].metric("Total Picks", len(ddf))
         dm[1].metric("Settled", total_d)
         dm[2].metric("Win Rate", f"{wr_d:.1f}%")
         dm[3].metric("Record", f"{total_w_d}W / {total_l_d}L / {push_d}P")
-        dm[4].metric("Open", len(open_dfs))
+        dm[4].metric("P&L", f"${total_pnl_d:+,.0f}", delta=f"{roi_d:+.1f}% ROI")
+        dm[5].metric("Open", len(open_dfs))
         st.markdown("---")
 
         left, right = st.columns(2)
 
         # ── By Platform ─────────────────────────────────────────
         with left:
-            st.markdown("**Win Rate by Platform**")
+            st.markdown("**Performance by Platform**")
             plat_rows = []
             for plat in sorted(settled_dfs['platform'].dropna().unique()):
                 sub = settled_dfs[settled_dfs['platform'] == plat]
-                w = (sub['status'] == 'Won').sum()
-                l = (sub['status'] == 'Lost').sum()
-                p = (sub['status'] == 'Push').sum()
-                wr = w / max(len(sub) - p, 1) * 100
-                plat_rows.append({'Platform': plat, 'Count': len(sub),
-                                  'W': w, 'L': l, 'P': p, 'Win%': f"{wr:.1f}%"})
+                w   = (sub['status'] == 'Won').sum()
+                l   = (sub['status'] == 'Lost').sum()
+                p   = (sub['status'] == 'Push').sum()
+                wr  = w / max(len(sub) - p, 1) * 100
+                pnl = sub['profit'].sum()
+                roi = pnl / max(len(sub) * 100, 1) * 100
+                plat_rows.append({'Platform': plat, 'Count': len(sub), 'W': w, 'L': l, 'P': p,
+                                  'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
             if plat_rows:
                 st.dataframe(pd.DataFrame(plat_rows).sort_values('Count', ascending=False),
                              use_container_width=True, hide_index=True)
 
         # ── By Market Type ──────────────────────────────────────
         with right:
-            st.markdown("**Win Rate by Market (min 5 picks)**")
+            st.markdown("**Performance by Market (min 5 picks)**")
             mkt_rows = []
             for mkt in settled_dfs['market_clean'].dropna().unique():
                 sub = settled_dfs[settled_dfs['market_clean'] == mkt]
                 if len(sub) < 5: continue
-                w = (sub['status'] == 'Won').sum()
-                l = (sub['status'] == 'Lost').sum()
-                p = (sub['status'] == 'Push').sum()
-                wr = w / max(len(sub) - p, 1) * 100
-                mkt_rows.append({'Market': mkt, 'Count': len(sub),
-                                 'W': w, 'L': l, 'Win%': f"{wr:.1f}%"})
+                w   = (sub['status'] == 'Won').sum()
+                l   = (sub['status'] == 'Lost').sum()
+                p   = (sub['status'] == 'Push').sum()
+                wr  = w / max(len(sub) - p, 1) * 100
+                pnl = sub['profit'].sum()
+                roi = pnl / max(len(sub) * 100, 1) * 100
+                mkt_rows.append({'Market': mkt, 'Count': len(sub), 'W': w, 'L': l,
+                                 'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
             if mkt_rows:
                 st.dataframe(
                     pd.DataFrame(mkt_rows).sort_values('Count', ascending=False).head(15),
@@ -1486,10 +1493,23 @@ with tab_dfs:
 
         st.markdown("---")
 
+        # ── Cumulative P&L chart ─────────────────────────────────
+        if not settled_dfs.empty:
+            st.markdown("**Cumulative P&L (settled picks)**")
+            chart_dfs = settled_dfs.sort_values('timestamp').copy()
+            chart_dfs['cumulative_pnl'] = chart_dfs['profit'].cumsum() / 100
+            fig_dfs_cum = px.line(chart_dfs, x='timestamp', y='cumulative_pnl',
+                                  labels={'timestamp': '', 'cumulative_pnl': 'Units'},
+                                  color_discrete_sequence=['#1DA462'])
+            fig_dfs_cum.update_layout(**LAYOUT, height=280)
+            fig_dfs_cum.add_hline(y=0, line_dash='dash', line_color='#30363d')
+            st.plotly_chart(fig_dfs_cum, use_container_width=True)
+            st.markdown("---")
+
         # ── Smash Score vs Win Rate ──────────────────────────────
-        has_smash = 'smash_score' in settled_dfs.columns and settled_dfs['smash_score'].notna().sum() >= 5
-        if has_smash:
-            st.markdown("**Smash Score → Win Rate**")
+        has_smash_dfs = 'smash_score' in settled_dfs.columns and settled_dfs['smash_score'].notna().sum() >= 5
+        if has_smash_dfs:
+            st.markdown("**Smash Score → Win Rate & P&L**")
             DFS_SMASH_BUCKETS = [
                 (0,  45, '<45 (below gate)'),
                 (45, 50, '45–50'),
@@ -1503,11 +1523,13 @@ with tab_dfs:
                                   (settled_dfs['smash_score'] >= lo) &
                                   (settled_dfs['smash_score'] < hi)]
                 if len(sub) < 3: continue
-                w = (sub['status'] == 'Won').sum()
-                p = (sub['status'] == 'Push').sum()
-                wr = w / max(len(sub) - p, 1) * 100
-                smash_rows.append({'Smash Bucket': lbl, 'Count': len(sub),
-                                   'W': w, 'Win%': f"{wr:.1f}%"})
+                w   = (sub['status'] == 'Won').sum()
+                p   = (sub['status'] == 'Push').sum()
+                wr  = w / max(len(sub) - p, 1) * 100
+                pnl = sub['profit'].sum()
+                roi = pnl / max(len(sub) * 100, 1) * 100
+                smash_rows.append({'Smash Bucket': lbl, 'Count': len(sub), 'W': w,
+                                   'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
             if smash_rows:
                 st.dataframe(pd.DataFrame(smash_rows), use_container_width=True, hide_index=True)
             st.markdown("---")
@@ -1525,10 +1547,12 @@ with tab_dfs:
 
         log_rows = []
         for _, row in show_ddf.head(200).iterrows():
-            emoji = {"Won": "✅", "Lost": "❌", "Push": "⏸️",
-                     "Open": "⏳", "Pending": "⏳"}.get(row['status'], "")
+            emoji   = {"Won": "✅", "Lost": "❌", "Push": "⏸️",
+                       "Open": "⏳", "Pending": "⏳"}.get(row['status'], "")
             smash_s = f"{row['smash_score']:.0f}" if pd.notna(row.get('smash_score')) else "—"
             edge_s  = f"{row['edge_score']:.0f}"  if pd.notna(row.get('edge_score'))  else "—"
+            is_settled = row['status'] in ('Won', 'Lost', 'Push')
+            pnl_s   = f"${row['profit']:+,.0f}" if is_settled else "—"
             log_rows.append({
                 '':         emoji,
                 'Date':     row['timestamp'].strftime('%m/%d %H:%M') if pd.notna(row['timestamp']) else '—',
@@ -1539,6 +1563,7 @@ with tab_dfs:
                 'Smash':    smash_s,
                 'Edge':     edge_s,
                 'Status':   row['status'],
+                'P&L':      pnl_s,
             })
         if log_rows:
             st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
