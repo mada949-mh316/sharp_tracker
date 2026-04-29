@@ -144,10 +144,58 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=300)
+def fetch_dfs_picks() -> pd.DataFrame:
+    """Load DFS combo slips from the dfs_picks table."""
+    import psycopg2
+    db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
+    conn = psycopg2.connect(db_url, sslmode='disable')
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'dfs_picks'
+                )
+            """)
+            exists = cur.fetchone()[0]
+        if not exists:
+            conn.close()
+            return pd.DataFrame()
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+    sql = """
+        SELECT id, created_at, platform, n_picks, play_type, multiplier, flex_qualifier,
+               pick1_sel, pick1_market, pick1_matchup, pick1_league, pick1_smash, pick1_edge,
+               pick2_sel, pick2_market, pick2_matchup, pick2_league, pick2_smash, pick2_edge,
+               pick3_sel, pick3_market, pick3_matchup, pick3_league, pick3_smash, pick3_edge,
+               pick4_sel, pick4_market, pick4_matchup, pick4_league, pick4_smash, pick4_edge,
+               pick5_sel, pick5_market, pick5_matchup, pick5_league, pick5_smash, pick5_edge,
+               pick6_sel, pick6_market, pick6_matchup, pick6_league, pick6_smash, pick6_edge,
+               status, profit, graded_at
+        FROM dfs_picks
+        ORDER BY created_at DESC
+    """
+    df = pd.read_sql(sql, conn)
+    conn.close()
+    if df.empty:
+        return df
+    df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
+    df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0)
+    # Build human-readable label: "3-Pick Power (6x)"
+    def _slip_label(row):
+        fq = f", need {row['flex_qualifier']}" if row['flex_qualifier'] else ""
+        return f"{row['n_picks']}-Pick {row['play_type']} ({row['multiplier']}x{fq})"
+    df['slip_label'] = df.apply(_slip_label, axis=1)
+    return df
+
+
 def bust_cache():
     fetch_from_db.clear()
     fetch_parlays.clear()
     fetch_dfs_from_db.clear()
+    fetch_dfs_picks.clear()
     st.rerun()
 
 
@@ -1422,153 +1470,130 @@ with tab_parlays:
 with tab_dfs:
     st.subheader("🎯 DFS Pick Tracker")
     try:
-        ddf = fetch_dfs_from_db(days_back)
+        dpdf = fetch_dfs_picks()
     except Exception as e:
-        st.error(f"Could not load DFS picks: {e}")
-        ddf = pd.DataFrame()
+        st.error(f"Could not load DFS slips: {e}")
+        dpdf = pd.DataFrame()
 
-    if ddf.empty:
-        st.info("No DFS picks recorded yet. They appear once PrizePicks, Underdog, or Pick6 bets are tracked.")
+    if dpdf.empty:
+        st.info("No DFS combo slips recorded yet. They appear once tracker.py posts a PrizePicks, Underdog, or Pick6 combo to Discord.")
     else:
-        settled_dfs = ddf[ddf['status'].isin(['Won', 'Lost', 'Push'])].copy()
-        open_dfs    = ddf[ddf['status'].isin(['Open', 'Pending'])]
+        settled_dp = dpdf[dpdf['status'].isin(['Won', 'Lost', 'Push'])].copy()
+        open_dp    = dpdf[dpdf['status'].isin(['Open', 'Pending'])]
 
         # ── Summary metrics ──────────────────────────────────────
-        total_d   = len(settled_dfs)
-        total_w_d = (settled_dfs['status'] == 'Won').sum()
-        total_l_d = (settled_dfs['status'] == 'Lost').sum()
-        push_d    = (settled_dfs['status'] == 'Push').sum()
-        wr_d      = total_w_d / max(total_d - push_d, 1) * 100
-        total_pnl_d = settled_dfs['profit'].sum()
-        roi_d       = total_pnl_d / max(total_d * 100, 1) * 100
+        total_dp  = len(settled_dp)
+        w_dp      = (settled_dp['status'] == 'Won').sum()
+        l_dp      = (settled_dp['status'] == 'Lost').sum()
+        p_dp      = (settled_dp['status'] == 'Push').sum()
+        wr_dp     = w_dp / max(total_dp - p_dp, 1) * 100
+        pnl_dp    = settled_dp['profit'].sum()
+        roi_dp    = pnl_dp / max(total_dp * 100, 1) * 100
 
         dm = st.columns(6)
-        dm[0].metric("Total Picks", len(ddf))
-        dm[1].metric("Settled", total_d)
-        dm[2].metric("Win Rate", f"{wr_d:.1f}%")
-        dm[3].metric("Record", f"{total_w_d}W / {total_l_d}L / {push_d}P")
-        dm[4].metric("P&L", f"${total_pnl_d:+,.0f}", delta=f"{roi_d:+.1f}% ROI")
-        dm[5].metric("Open", len(open_dfs))
+        dm[0].metric("Total Slips", len(dpdf))
+        dm[1].metric("Settled", total_dp)
+        dm[2].metric("Win Rate", f"{wr_dp:.1f}%")
+        dm[3].metric("Record", f"{w_dp}W / {l_dp}L / {p_dp}P")
+        dm[4].metric("P&L", f"${pnl_dp:+,.0f}", delta=f"{roi_dp:+.1f}% ROI")
+        dm[5].metric("Open", len(open_dp))
         st.markdown("---")
 
-        left, right = st.columns(2)
+        left_dp, right_dp = st.columns(2)
 
         # ── By Platform ─────────────────────────────────────────
-        with left:
+        with left_dp:
             st.markdown("**Performance by Platform**")
             plat_rows = []
-            for plat in sorted(settled_dfs['platform'].dropna().unique()):
-                sub = settled_dfs[settled_dfs['platform'] == plat]
+            for plat in sorted(settled_dp['platform'].dropna().unique()):
+                sub = settled_dp[settled_dp['platform'] == plat]
                 w   = (sub['status'] == 'Won').sum()
                 l   = (sub['status'] == 'Lost').sum()
-                p   = (sub['status'] == 'Push').sum()
-                wr  = w / max(len(sub) - p, 1) * 100
+                p_  = (sub['status'] == 'Push').sum()
+                wr  = w / max(len(sub) - p_, 1) * 100
                 pnl = sub['profit'].sum()
                 roi = pnl / max(len(sub) * 100, 1) * 100
-                plat_rows.append({'Platform': plat, 'Count': len(sub), 'W': w, 'L': l, 'P': p,
+                plat_rows.append({'Platform': plat, 'Slips': len(sub), 'W': w, 'L': l, 'P': p_,
                                   'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
             if plat_rows:
-                st.dataframe(pd.DataFrame(plat_rows).sort_values('Count', ascending=False),
+                st.dataframe(pd.DataFrame(plat_rows).sort_values('Slips', ascending=False),
                              use_container_width=True, hide_index=True)
 
-        # ── By Market Type ──────────────────────────────────────
-        with right:
-            st.markdown("**Performance by Market (min 5 picks)**")
-            mkt_rows = []
-            for mkt in settled_dfs['market_clean'].dropna().unique():
-                sub = settled_dfs[settled_dfs['market_clean'] == mkt]
-                if len(sub) < 5: continue
+        # ── By Slip Size ─────────────────────────────────────────
+        with right_dp:
+            st.markdown("**Performance by Slip Size**")
+            size_rows = []
+            for lbl in sorted(settled_dp['slip_label'].dropna().unique()):
+                sub = settled_dp[settled_dp['slip_label'] == lbl]
                 w   = (sub['status'] == 'Won').sum()
                 l   = (sub['status'] == 'Lost').sum()
-                p   = (sub['status'] == 'Push').sum()
-                wr  = w / max(len(sub) - p, 1) * 100
+                p_  = (sub['status'] == 'Push').sum()
+                wr  = w / max(len(sub) - p_, 1) * 100
                 pnl = sub['profit'].sum()
                 roi = pnl / max(len(sub) * 100, 1) * 100
-                mkt_rows.append({'Market': mkt, 'Count': len(sub), 'W': w, 'L': l,
-                                 'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
-            if mkt_rows:
-                st.dataframe(
-                    pd.DataFrame(mkt_rows).sort_values('Count', ascending=False).head(15),
-                    use_container_width=True, hide_index=True)
+                size_rows.append({'Slip Type': lbl, 'Slips': len(sub), 'W': w, 'L': l,
+                                  'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
+            if size_rows:
+                st.dataframe(pd.DataFrame(size_rows).sort_values('Slips', ascending=False),
+                             use_container_width=True, hide_index=True)
 
         st.markdown("---")
 
         # ── Cumulative P&L chart ─────────────────────────────────
-        if not settled_dfs.empty:
-            st.markdown("**Cumulative P&L (settled picks)**")
-            chart_dfs = settled_dfs.sort_values('timestamp').copy()
-            chart_dfs['cumulative_pnl'] = chart_dfs['profit'].cumsum() / 100
-            fig_dfs_cum = px.line(chart_dfs, x='timestamp', y='cumulative_pnl',
-                                  labels={'timestamp': '', 'cumulative_pnl': 'Units'},
-                                  color_discrete_sequence=['#1DA462'])
-            fig_dfs_cum.update_layout(**LAYOUT, height=280)
-            fig_dfs_cum.add_hline(y=0, line_dash='dash', line_color='#30363d')
-            st.plotly_chart(fig_dfs_cum, use_container_width=True)
+        if not settled_dp.empty:
+            st.markdown("**Cumulative P&L (settled slips)**")
+            chart_dp = settled_dp.sort_values('created_at').copy()
+            chart_dp['cumulative_pnl'] = chart_dp['profit'].cumsum() / 100
+            fig_dp_cum = px.line(chart_dp, x='created_at', y='cumulative_pnl',
+                                 labels={'created_at': '', 'cumulative_pnl': 'Units'},
+                                 color_discrete_sequence=['#1DA462'])
+            fig_dp_cum.update_layout(**LAYOUT, height=280)
+            fig_dp_cum.add_hline(y=0, line_dash='dash', line_color='#30363d')
+            st.plotly_chart(fig_dp_cum, use_container_width=True)
             st.markdown("---")
 
-        # ── Smash Score vs Win Rate ──────────────────────────────
-        has_smash_dfs = 'smash_score' in settled_dfs.columns and settled_dfs['smash_score'].notna().sum() >= 5
-        if has_smash_dfs:
-            st.markdown("**Smash Score → Win Rate & P&L**")
-            DFS_SMASH_BUCKETS = [
-                (0,  45, '<45 (below gate)'),
-                (45, 50, '45–50'),
-                (50, 55, '50–55'),
-                (55, 60, '55–60'),
-                (60, 101, '60+'),
-            ]
-            smash_rows = []
-            for lo, hi, lbl in DFS_SMASH_BUCKETS:
-                sub = settled_dfs[settled_dfs['smash_score'].notna() &
-                                  (settled_dfs['smash_score'] >= lo) &
-                                  (settled_dfs['smash_score'] < hi)]
-                if len(sub) < 3: continue
-                w   = (sub['status'] == 'Won').sum()
-                p   = (sub['status'] == 'Push').sum()
-                wr  = w / max(len(sub) - p, 1) * 100
-                pnl = sub['profit'].sum()
-                roi = pnl / max(len(sub) * 100, 1) * 100
-                smash_rows.append({'Smash Bucket': lbl, 'Count': len(sub), 'W': w,
-                                   'Win%': f"{wr:.1f}%", 'P&L': f"${pnl:+,.0f}", 'ROI': f"{roi:+.1f}%"})
-            if smash_rows:
-                st.dataframe(pd.DataFrame(smash_rows), use_container_width=True, hide_index=True)
-            st.markdown("---")
+        # ── Slip Log ────────────────────────────────────────────
+        st.markdown("**Slip Log**")
+        dp_filter = st.radio("Filter", ["All", "Open", "Won", "Lost", "Push"],
+                             horizontal=True, key="dfs_slip_filter")
+        dp_plat = st.multiselect("Platform", sorted(dpdf['platform'].dropna().unique()),
+                                 default=sorted(dpdf['platform'].dropna().unique()),
+                                 key="dfs_slip_plat_filter")
+        show_dp = dpdf if dp_filter == "All" else dpdf[dpdf['status'] == dp_filter]
+        if dp_plat:
+            show_dp = show_dp[show_dp['platform'].isin(dp_plat)]
 
-        # ── Pick Log ────────────────────────────────────────────
-        st.markdown("**Pick Log**")
-        d_filter = st.radio("Filter", ["All", "Open", "Won", "Lost", "Push"],
-                            horizontal=True, key="dfs_filter")
-        d_plat = st.multiselect("Platform", sorted(ddf['platform'].dropna().unique()),
-                                default=sorted(ddf['platform'].dropna().unique()),
-                                key="dfs_plat_filter")
-        show_ddf = ddf if d_filter == "All" else ddf[ddf['status'] == d_filter]
-        if d_plat:
-            show_ddf = show_ddf[show_ddf['platform'].isin(d_plat)]
-
-        log_rows = []
-        for _, row in show_ddf.head(200).iterrows():
-            emoji   = {"Won": "✅", "Lost": "❌", "Push": "⏸️",
-                       "Open": "⏳", "Pending": "⏳"}.get(row['status'], "")
-            smash_s = f"{row['smash_score']:.0f}" if pd.notna(row.get('smash_score')) else "—"
-            edge_s  = f"{row['edge_score']:.0f}"  if pd.notna(row.get('edge_score'))  else "—"
+        _pick_cols = [
+            ('pick1_sel', 'pick1_market'), ('pick2_sel', 'pick2_market'),
+            ('pick3_sel', 'pick3_market'), ('pick4_sel', 'pick4_market'),
+            ('pick5_sel', 'pick5_market'), ('pick6_sel', 'pick6_market'),
+        ]
+        slip_rows = []
+        for _, row in show_dp.head(200).iterrows():
+            emoji  = {"Won": "✅", "Lost": "❌", "Push": "⏸️",
+                      "Open": "⏳", "Pending": "⏳"}.get(row['status'], "")
             is_settled = row['status'] in ('Won', 'Lost', 'Push')
-            pnl_s   = f"${row['profit']:+,.0f}" if is_settled else "—"
-            log_rows.append({
-                '':         emoji,
-                'Date':     row['timestamp'].strftime('%m/%d %H:%M') if pd.notna(row['timestamp']) else '—',
+            pnl_s  = f"${row['profit']:+,.0f}" if is_settled else "—"
+            picks_parts = []
+            for sel_col, mkt_col in _pick_cols:
+                sel = row.get(sel_col)
+                mkt = row.get(mkt_col)
+                if pd.notna(sel) and sel:
+                    picks_parts.append(f"{sel} ({mkt})" if pd.notna(mkt) and mkt else str(sel))
+            picks_str = " | ".join(picks_parts)
+            slip_rows.append({
+                '':       emoji,
+                'Date':   row['created_at'].strftime('%m/%d %H:%M') if pd.notna(row['created_at']) else '—',
                 'Platform': row['platform'],
-                'Pick':     row['play_selection'],
-                'Market':   row['market_clean'],
-                'League':   row.get('league', ''),
-                'Smash':    smash_s,
-                'Edge':     edge_s,
-                'Status':   row['status'],
-                'P&L':      pnl_s,
+                'Slip':   row['slip_label'],
+                'Picks':  picks_str,
+                'Status': row['status'],
+                'P&L':    pnl_s,
             })
-        if log_rows:
-            st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
+        if slip_rows:
+            st.dataframe(pd.DataFrame(slip_rows), use_container_width=True, hide_index=True)
         else:
-            st.info("No picks match this filter.")
+            st.info("No slips match this filter.")
 
 
 # ─── DEBUG ────────────────────────────────────────────────────
