@@ -498,7 +498,7 @@ with tab_log:
     st.subheader("Bet History")
     base_cols = ['timestamp','tier','league','matchup','bet_type','prop_cat',
                  'play_selection','bet_side','play_odds','play_book',
-                 'primary_sharp','consensus','status','profit']
+                 'primary_sharp','consensus','liquidity','status','profit']
     # Show likely_missed in the log when expired bets are included
     extra_cols = []
     if status_scope == "All Bets (incl. Expired)" and 'likely_missed' in df_f.columns:
@@ -508,10 +508,11 @@ with tab_log:
     show_cols  = [c for c in base_cols + extra_cols + score_cols + twroi_cols if c in df_f.columns]
 
     col_config = {
-        "profit":    st.column_config.NumberColumn("Profit",  format="$%.2f", width="medium"),
-        "play_odds": st.column_config.NumberColumn("Odds",    format="%d",    width="small"),
-        "consensus": st.column_config.NumberColumn("# Books", width="small"),
-        "tier":      st.column_config.TextColumn("Tier",      width="small"),
+        "profit":    st.column_config.NumberColumn("Profit",    format="$%.2f", width="medium"),
+        "play_odds": st.column_config.NumberColumn("Odds",      format="%d",    width="small"),
+        "consensus": st.column_config.NumberColumn("# Books",   width="small"),
+        "tier":      st.column_config.TextColumn("Tier",        width="small"),
+        "liquidity": st.column_config.NumberColumn("Liquidity", format="$%,.0f", width="medium"),
     }
     if 'likely_missed' in show_cols:
         col_config["likely_missed"] = st.column_config.CheckboxColumn("Likely Missed?", width="small")
