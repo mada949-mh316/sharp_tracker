@@ -33,16 +33,22 @@ h1,h2,h3 { font-family: 'IBM Plex Mono', monospace; }
 .stMetric label { color:#e6edf3 !important; font-size:10px !important; letter-spacing:1.5px;
     text-transform:uppercase; font-family:'IBM Plex Mono',monospace !important; white-space:nowrap; }
 [data-testid="stMetricValue"] { font-family:'IBM Plex Mono',monospace !important;
-    font-size:1.05rem !important; white-space:nowrap !important; overflow:visible !important; }
-[data-testid="stMetricDelta"] { font-size:0.72rem !important; white-space:nowrap !important; }
+    font-size:1.05rem !important; white-space:nowrap !important; overflow:visible !important;
+    color: #58a6ff !important; }
+[data-testid="stMetricDelta"] { font-size:0.72rem !important; white-space:nowrap !important;
+    color: #7ee8a2 !important; }
 .insight-card { background:#161b22; border-left:3px solid #58a6ff; border-radius:6px;
-    padding:10px 14px; margin-bottom:8px; font-size:13px; }
+    padding:10px 14px; margin-bottom:8px; font-size:13px; color:#e6edf3; }
 div[data-testid="stTab"] button { font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:1px; }
 section[data-testid="stSidebar"] { background:#0d1117; border-right:1px solid #21262d; }
-/* Prevent profit/ROI values from being clipped in dataframes */
-.ag-cell { white-space: nowrap !important; overflow: visible !important; }
+section[data-testid="stSidebar"] * { color: #e6edf3 !important; }
+/* Dataframe cell text — light blue so values are readable on dark background */
+.ag-cell { white-space: nowrap !important; overflow: visible !important;
+    color: #58a6ff !important; }
 .ag-cell-value { overflow: visible !important; text-overflow: unset !important; }
 [data-testid="stDataFrame"] .ag-cell { min-width: fit-content !important; }
+/* Dataframe header text stays white for contrast with cell blue */
+.ag-header-cell-text { color: #e6edf3 !important; }
 </style>
 """, unsafe_allow_html=True)
 
