@@ -214,7 +214,7 @@ def load_bets(
                play_odds, play_book, sharp_odds, sharp_book,
                liquidity, wager, result, profit, status,
                edge_score, gem_score, smash_score, alerted,
-               twroi, bk_twroi
+               twroi, bk_twroi, true_edge, true_edge_n
         FROM bets
         WHERE {where}
         {order}
@@ -235,7 +235,7 @@ def load_bets_date_range(start_date, end_date) -> pd.DataFrame:
                play_odds, play_book, sharp_odds, sharp_book,
                liquidity, wager, result, profit, status,
                edge_score, gem_score, smash_score, alerted,
-               twroi, bk_twroi
+               twroi, bk_twroi, true_edge, true_edge_n
         FROM bets
         WHERE timestamp >= %s AND timestamp < %s
         ORDER BY timestamp DESC
