@@ -407,6 +407,16 @@ if HAS_TWROI_SIDEBAR:
 else:
     min_twroi, min_bk_twroi = -100, -100
 
+HAS_TRUE_EDGE_SIDEBAR = 'true_edge' in df.columns and df['true_edge'].notna().sum() > 0
+if HAS_TRUE_EDGE_SIDEBAR:
+    st.sidebar.markdown("**True Edge Filter** *(alerted bets only)*")
+    st.sidebar.caption("CI lower bound — positive = structural tailwind. Use N filter to exclude small samples.")
+    te1, te2 = st.sidebar.columns(2)
+    min_true_edge = te1.number_input("Min CI%", value=-100.0, step=1.0, format="%.0f", key="min_true_edge")
+    min_true_edge_n = te2.number_input("Min N", value=0, step=10, format="%d", key="min_true_edge_n")
+else:
+    min_true_edge, min_true_edge_n = -100.0, 0
+
 # ── Apply filters ──
 df_f = df.copy()
 
@@ -418,7 +428,7 @@ if status_scope == "Exclude Expired":
 if preset == "NBA Props Only":         df_f = df_f[(df_f['league']=='NBA')&(df_f['bet_type']=='Player Prop')]
 elif preset == "3+ Consensus Only":    df_f = df_f[df_f['consensus']>=3]
 elif preset == "Exclude Fanatics":     df_f = df_f[df_f['play_book']!='Fanatics']
-elif preset == "Best Edges (DIAMOND + GOLD)": df_f = df_f[df_f['tier'].isin(['DIAMOND','GOLD'])]
+elif preset == "Best Edges (DIAMOND + GOLD)": df_f = df_f[df_f['tier'].isin(['BRONZE','GOLD'])]
 elif preset == "Prop Unders Only":     df_f = df_f[df_f['is_prop_under']]
 elif preset == "Alerted Bets Only":
     if 'alerted' in df_f.columns:
@@ -445,6 +455,13 @@ if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
     df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
 if HAS_TWROI_SIDEBAR and min_twroi > -100:
     df_f = df_f[df_f['twroi'].notna() & (df_f['twroi'] >= min_twroi)]
+if HAS_TRUE_EDGE_SIDEBAR and (min_true_edge > -100.0 or min_true_edge_n > 0):
+    te_mask = df_f['true_edge'].notna()
+    if min_true_edge > -100.0:
+        te_mask = te_mask & (df_f['true_edge'] >= min_true_edge)
+    if min_true_edge_n > 0:
+        te_mask = te_mask & (df_f['true_edge_n'].fillna(0) >= min_true_edge_n)
+    df_f = df_f[te_mask]
 if HAS_TWROI_SIDEBAR and min_bk_twroi > -100:
     df_f = df_f[df_f['bk_twroi'].notna() & (df_f['bk_twroi'] >= min_bk_twroi)]
 
@@ -503,9 +520,10 @@ with tab_log:
     extra_cols = []
     if status_scope == "All Bets (incl. Expired)" and 'likely_missed' in df_f.columns:
         extra_cols = ['likely_missed']
-    score_cols = [c for c in ['edge_score','gem_score','smash_score'] if c in df_f.columns and df_f[c].notna().any()]
-    twroi_cols = [c for c in ['twroi','bk_twroi'] if c in df_f.columns and df_f[c].notna().any()]
-    show_cols  = [c for c in base_cols + extra_cols + score_cols + twroi_cols if c in df_f.columns]
+    score_cols     = [c for c in ['edge_score','gem_score','smash_score'] if c in df_f.columns and df_f[c].notna().any()]
+    twroi_cols     = [c for c in ['twroi','bk_twroi'] if c in df_f.columns and df_f[c].notna().any()]
+    true_edge_cols = [c for c in ['true_edge','true_edge_n'] if c in df_f.columns and df_f[c].notna().any()]
+    show_cols      = [c for c in base_cols + extra_cols + score_cols + twroi_cols + true_edge_cols if c in df_f.columns]
 
     col_config = {
         "profit":    st.column_config.NumberColumn("Profit",    format="$%.2f", width="medium"),
@@ -529,9 +547,25 @@ with tab_log:
         col_config["twroi"]    = st.column_config.NumberColumn("TWROI",    format="%.1f%%")
     if 'bk_twroi' in twroi_cols:
         col_config["bk_twroi"] = st.column_config.NumberColumn("Bk TWROI", format="%.1f%%")
+    if 'true_edge' in true_edge_cols:
+        col_config["true_edge"]   = st.column_config.NumberColumn("True Edge CI%", format="%.1f%%")
+    if 'true_edge_n' in true_edge_cols:
+        col_config["true_edge_n"] = st.column_config.NumberColumn("TE N", format="%d", width="small")
 
-    st.dataframe(df_f[show_cols].sort_values('timestamp', ascending=False),
-                 use_container_width=True, column_config=col_config)
+    display_df = df_f[show_cols].sort_values('timestamp', ascending=False)
+    st.dataframe(display_df, use_container_width=True, column_config=col_config)
+
+    csv_bytes = display_df.copy()
+    if 'timestamp' in csv_bytes.columns:
+        csv_bytes['timestamp'] = csv_bytes['timestamp'].astype(str)
+    csv_bytes = csv_bytes.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label=f"⬇️ Download {len(display_df):,} bets as CSV",
+        data=csv_bytes,
+        file_name=f"smart_money_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        key="download_bets_csv",
+    )
 
 
 # ─── TIER PERFORMANCE ────────────────────────────────────────
