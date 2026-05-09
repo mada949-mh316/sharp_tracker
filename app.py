@@ -343,7 +343,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Quick Presets")
 preset = st.sidebar.radio("", [
     "All Bets","NBA Props Only","3+ Consensus Only",
-    "Exclude Fanatics","Best Edges (DIAMOND + GOLD)","Prop Unders Only",
+    "Exclude Fanatics","Best Edges (BRONZE + GOLD)","Prop Unders Only",
     "Alerted Bets Only"
 ], label_visibility="collapsed")
 
@@ -358,7 +358,15 @@ metric_mode = st.sidebar.radio("", ["ROI (%)", "Total Profit ($)"], label_visibi
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manual Filters")
 all_leagues = sorted(df['league'].dropna().unique())
-sel_leagues = st.sidebar.multiselect("Leagues", all_leagues, default=all_leagues)
+# Auto-add leagues that appear in fresh data but are missing from session state
+_sk = 'sel_leagues_v2'
+if _sk not in st.session_state:
+    st.session_state[_sk] = all_leagues
+else:
+    added = [lg for lg in all_leagues if lg not in st.session_state[_sk]]
+    if added:
+        st.session_state[_sk] = sorted(st.session_state[_sk] + added)
+sel_leagues = st.sidebar.multiselect("Leagues", all_leagues, key=_sk)
 sel_tiers   = st.sidebar.multiselect("Tier", TIER_ORDER, default=TIER_ORDER)
 all_sharps  = sorted(df['primary_sharp'].dropna().unique())
 sel_sharps  = st.sidebar.multiselect("Sharp Book Signal", all_sharps, default=all_sharps)
@@ -434,7 +442,7 @@ if status_scope == "Exclude Expired":
 if preset == "NBA Props Only":         df_f = df_f[(df_f['league']=='NBA')&(df_f['bet_type']=='Player Prop')]
 elif preset == "3+ Consensus Only":    df_f = df_f[df_f['consensus']>=3]
 elif preset == "Exclude Fanatics":     df_f = df_f[df_f['play_book']!='Fanatics']
-elif preset == "Best Edges (DIAMOND + GOLD)": df_f = df_f[df_f['tier'].isin(['BRONZE','GOLD'])]
+elif preset == "Best Edges (BRONZE + GOLD)": df_f = df_f[df_f['tier'].isin(['BRONZE','GOLD'])]
 elif preset == "Prop Unders Only":     df_f = df_f[df_f['is_prop_under']]
 elif preset == "Alerted Bets Only":
     if 'alerted' in df_f.columns:
