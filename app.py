@@ -363,14 +363,16 @@ metric_mode = st.sidebar.radio("", ["ROI (%)", "Total Profit ($)"], label_visibi
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manual Filters")
 all_leagues = sorted(df['league'].dropna().unique())
-# Auto-add leagues that appear in fresh data but are missing from session state
-_sk = 'sel_leagues_v2'
+# Auto-add only leagues that are brand-new (never seen in a previous session).
+# Leagues the user deliberately unchecked are NOT re-added.
+_sk, _seen_key = 'sel_leagues_v2', 'seen_leagues_v2'
+_seen = set(st.session_state.get(_seen_key, []))
+_new  = [lg for lg in all_leagues if lg not in _seen]
 if _sk not in st.session_state:
     st.session_state[_sk] = all_leagues
-else:
-    added = [lg for lg in all_leagues if lg not in st.session_state[_sk]]
-    if added:
-        st.session_state[_sk] = sorted(st.session_state[_sk] + added)
+elif _new:
+    st.session_state[_sk] = sorted(set(st.session_state[_sk]) | set(_new))
+st.session_state[_seen_key] = all_leagues
 sel_leagues = st.sidebar.multiselect("Leagues", all_leagues, key=_sk)
 sel_tiers   = st.sidebar.multiselect("Tier", TIER_ORDER, default=TIER_ORDER)
 all_sharps  = sorted(df['primary_sharp'].dropna().unique())
@@ -1710,8 +1712,6 @@ with st.expander("🛠️ Debug"):
     st.write("Settled rows:", len(closed))
     st.write("Expired rows:", expired_n)
     st.write("Likely missed:", likely_missed_n)
-    st.write("All leagues in data:", all_leagues)
-    st.write("Selected leagues:", sel_leagues)
     st.write("Has edge_score:", HAS_MY_SCORE)
     st.write("Has gem_score:", HAS_GEM_SCORE)
     st.write("Has smash_score:", HAS_SMASH_SCORE)
