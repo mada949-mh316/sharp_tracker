@@ -26,7 +26,7 @@ CREDS_FILE  = "creds.json"
 
 DFS_BOOKS     = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6', 'DraftKings6']
 # Temporarily removed 'NCAAB' and 'Tennis' due to heavy negative ROI all-time
-VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAF', 'UFC', 'MLB']
+VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAF', 'UFC', 'MLB', 'WNBA']
 
 # Tier scoring thresholds
 GOOD_ODDS_MIN       = -150   
@@ -36,13 +36,13 @@ BAD_ODDS_MIN        = 1000   # Lifted from 500 based on +6.8% ROI for the 500-99
 BAD_ODDS_MAX        = 9999
 GOOD_LIQ_MIN        = 1      
 GOOD_LIQ_MAX        = 2000   
-PRIME_HOURS         = {0, 1, 4, 5, 8, 9, 12, 15, 16, 17, 18} # Updated to match >5% ROI heat map
+PRIME_HOURS         = {0, 4, 5, 6, 8, 9, 11, 13, 14, 15, 16, 17, 18} # Updated 2026-05-07: removed 1am (-3%), noon (-3.8%); added 6am (+14.4%), 11am (+16%), 1pm (+12.4%), 2pm (+7.5%)
 CONSENSUS_THRESHOLD = 3
 
 # Tier display metadata
-TIER_ORDER  = ['DIAMOND', 'GOLD', 'SILVER', 'STANDARD_PLUS', 'STANDARD', 'WATCH']
+TIER_ORDER  = ['GOLD', 'SILVER', 'STANDARD_PLUS', 'STANDARD', 'BRONZE', 'WATCH']
 TIER_COLORS = {
-    'DIAMOND':       '#00BFFF',
+    'BRONZE':       '#CD7F32',
     'GOLD':          '#D4AF37',
     'SILVER':        '#C0C0C0',
     'STANDARD_PLUS': '#27AE60',
@@ -50,13 +50,13 @@ TIER_COLORS = {
     'WATCH':         '#95A5A6',
 }
 TIER_EMOJI = {
-    'DIAMOND': '💎', 'GOLD': '🥇', 'SILVER': '🥈',
+    'BRONZE': '🥉', 'GOLD': '🥇', 'SILVER': '🥈',
     'STANDARD_PLUS': '⭐', 'STANDARD': '🔥', 'WATCH': '👁️',
 }
 
 # Discord embed colors (hex int)
 TIER_DISCORD_COLOR = {
-    'DIAMOND':        0x00BFFF,
+    'BRONZE':        0xCD7F32,
     'GOLD':           0xD4AF37,
     'SILVER':         0xC0C0C0,
     'STANDARD_PLUS':  0x27AE60,
@@ -155,12 +155,12 @@ _SIGNAL_ROI = {
     'prop_over_roi':       -3.0,
     'good_liq_roi':         6.4,
     'good_odds_roi':        3.7,
-    'diamond_roi':         14.9,
+    'bronze_roi':         14.9,
     'gold_roi':            12.2,
     'silver_roi':          11.4,
     'std_plus_roi':        23.3,
-    'diamond_3book_roi':   14.9,
-    'diamond_under_roi':    7.5,
+    'bronze_3book_roi':   14.9,
+    'bronze_under_roi':    7.5,
     'ncaab_ml_night_roi':   0.5,
     'ncaab_ml_day_roi':     1.7,
 }
@@ -239,12 +239,12 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
         'prop_over_roi':      _roi(df[is_player & is_over]),
         'good_liq_roi':       _roi(df[is_good_liq]),
         'good_odds_roi':      _roi(df[is_good_odds]),
-        'diamond_roi':        _roi(df[df['_tier'] == 'DIAMOND']),
+        'bronze_roi':        _roi(df[df['_tier'] == 'BRONZE']),
         'gold_roi':           _roi(df[df['_tier'] == 'GOLD']),
         'silver_roi':         _roi(df[df['_tier'] == 'SILVER']),
         'std_plus_roi':       _roi(df[df['_tier'] == 'STANDARD_PLUS']),
-        'diamond_3book_roi':  _roi(df[(df['_tier'] == 'DIAMOND') & (df['sharp_book'].str.count(',') >= 2)]),
-        'diamond_under_roi':  _roi(df[(df['_tier'] == 'DIAMOND') & is_player & is_under]),
+        'bronze_3book_roi':  _roi(df[(df['_tier'] == 'BRONZE') & (df['sharp_book'].str.count(',') >= 2)]),
+        'bronze_under_roi':  _roi(df[(df['_tier'] == 'BRONZE') & is_player & is_under]),
         'ncaab_ml_night_roi': _roi(df[is_ncaab_ml & is_night]),
         'ncaab_ml_day_roi':   _roi(df[is_ncaab_ml & ~is_night]),
     }
@@ -548,9 +548,9 @@ def classify_tier(bet_data):
         return 'WATCH', flags
 
     if consensus >= CONSENSUS_THRESHOLD and good_odds and is_prop_under:
-        return 'DIAMOND', flags
+        return 'BRONZE', flags
     if consensus >= CONSENSUS_THRESHOLD and good_odds and good_liq:
-        return 'DIAMOND', flags
+        return 'BRONZE', flags
     if consensus >= CONSENSUS_THRESHOLD and good_odds:
         return 'GOLD', flags
     if is_prop_under and good_liq and good_odds_under:
@@ -574,20 +574,20 @@ def classify_tier(bet_data):
 # DISCORD MESSAGE BUILDERS
 # ─────────────────────────────────────────────────────────────
 
-def build_diamond_description(flags):
+def build_bronze_description(flags):
     consensus     = flags.get('consensus', 0)
     is_prop_under = flags.get('is_prop_under', False)
     good_liq      = flags.get('good_liq', False)
 
     if consensus >= CONSENSUS_THRESHOLD and is_prop_under:
-        r = _SIGNAL_ROI.get('diamond_3book_roi', 14.5)
+        r = _SIGNAL_ROI.get('bronze_3book_roi', 14.5)
         return f"3+ sharp books agree on a player prop Under — our highest-conviction combo. {r:+.1f}% ROI historically."
     if consensus >= CONSENSUS_THRESHOLD and good_liq:
         return "3+ sharp books agree and liquidity is in the sweet spot. 13.5% ROI historically."
     if consensus >= CONSENSUS_THRESHOLD:
         return "3+ sharp books agree on this line. High consensus is our strongest signal — 14–15% ROI historically."
     if is_prop_under and good_liq:
-        r = _SIGNAL_ROI.get('diamond_under_roi', 13.0)
+        r = _SIGNAL_ROI.get('bronze_under_roi', 13.0)
         return f"Player prop Under with liquidity in the sweet spot. {r:+.1f}% ROI historically."
     return "Multiple edge factors aligned. Historically our strongest signal tier — 14.5% ROI."
 
@@ -614,7 +614,7 @@ def build_signal_summary(tier, flags, alert_type, is_low_confidence, is_suppress
     elif flags.get('good_odds_under') and flags.get('is_prop_under'):
         reasons.append("odds are in the profitable prop Under range (−250 to +999)")
 
-    base = build_diamond_description(flags) if tier == 'DIAMOND' else _get_tier_description(tier)
+    base = build_bronze_description(flags) if tier == 'BRONZE' else _get_tier_description(tier)
     why  = ("Flagged because: " + ", ".join(reasons) + ".") if reasons else ""
 
     notes = []
