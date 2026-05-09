@@ -303,6 +303,11 @@ days_back = window_options[selected_window]
 if st.sidebar.button("🔄 Refresh Data"):
     bust_cache()
 
+if st.sidebar.button("🔁 Reset Filters"):
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.rerun()
+
 try:
     total_in_db = count_bets()
     st.sidebar.caption(f"📦 {total_in_db:,} total bets in database")
@@ -1705,6 +1710,8 @@ with st.expander("🛠️ Debug"):
     st.write("Settled rows:", len(closed))
     st.write("Expired rows:", expired_n)
     st.write("Likely missed:", likely_missed_n)
+    st.write("All leagues in data:", all_leagues)
+    st.write("Selected leagues:", sel_leagues)
     st.write("Has edge_score:", HAS_MY_SCORE)
     st.write("Has gem_score:", HAS_GEM_SCORE)
     st.write("Has smash_score:", HAS_SMASH_SCORE)
