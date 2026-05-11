@@ -543,8 +543,9 @@ with tab_log:
         extra_cols = ['likely_missed']
     score_cols     = [c for c in ['edge_score','gem_score','smash_score'] if c in df_f.columns and df_f[c].notna().any()]
     twroi_cols     = [c for c in ['twroi','bk_twroi'] if c in df_f.columns and df_f[c].notna().any()]
+    ewma_cols      = [c for c in ['ewma'] if c in df_f.columns and df_f[c].notna().any()]
     true_edge_cols = [c for c in ['true_edge','true_edge_n'] if c in df_f.columns and df_f[c].notna().any()]
-    show_cols      = [c for c in base_cols + extra_cols + score_cols + twroi_cols + true_edge_cols if c in df_f.columns]
+    show_cols      = [c for c in base_cols + extra_cols + score_cols + twroi_cols + ewma_cols + true_edge_cols if c in df_f.columns]
 
     col_config = {
         "profit":    st.column_config.NumberColumn("Profit",    format="$%.2f", width="medium"),
@@ -565,9 +566,11 @@ with tab_log:
         col_config["smash_score"] = st.column_config.ProgressColumn(
             "Smash Score", min_value=0, max_value=100, format="%.1f")
     if 'twroi' in twroi_cols:
-        col_config["twroi"]    = st.column_config.NumberColumn("TWROI",    format="%.1f%%")
+        col_config["twroi"]    = st.column_config.NumberColumn("Mkt TWROI",  format="%.1f%%")
     if 'bk_twroi' in twroi_cols:
-        col_config["bk_twroi"] = st.column_config.NumberColumn("Bk TWROI", format="%.1f%%")
+        col_config["bk_twroi"] = st.column_config.NumberColumn("Book TWROI", format="%.1f%%")
+    if 'ewma' in ewma_cols:
+        col_config["ewma"] = st.column_config.NumberColumn("EWMA Momentum", format="%.1f%%")
     if 'true_edge' in true_edge_cols:
         col_config["true_edge"]   = st.column_config.NumberColumn("True Edge CI%", format="%.1f%%")
     if 'true_edge_n' in true_edge_cols:
@@ -1159,7 +1162,7 @@ with tab_edge:
             n=('profit','count'),
             wr=('status',lambda x: (x=='Won').sum()/max(len(x),1)*100),
         ).reset_index()
-        combo_s = combo_s[combo_s['n']>=bms_min].sort_values('avg_score',ascending=False).head(20)
+        combo_s = combo_s[combo_s['n']>=bms_min].sort_values('roi',ascending=True).head(20)
 
         fig_bms = go.Figure(go.Bar(
             x=combo_s['avg_score'], y=combo_s['bms_key'], orientation='h',
