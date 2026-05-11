@@ -263,10 +263,10 @@ MY_SCORE_BUCKETS = [
     (70, 101, 'HIGH',  '#00ffcc'),
 ]
 GEM_SCORE_BUCKETS = [
-    (0,  52, 'SKIP',      '#ef4444'),
-    (52, 54, 'NEAR',      '#f59e0b'),
-    (54, 56, 'BET 1u',    '#4ade80'),
-    (56, 70, 'BET 0.25u', '#00ff9f'),
+    (0,  52, 'SKIP (0–52)',      '#ef4444'),
+    (52, 54, 'NEAR (52–54)',     '#f59e0b'),
+    (54, 56, 'BET 1u (54–56)',   '#4ade80'),
+    (56, 70, 'BET 0.25u (56–70)','#00ff9f'),
 ]
 SMASH_SCORE_BUCKETS = [
     (0,  52, 'SKIP (<52)',   '#ef4444'),
