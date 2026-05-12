@@ -108,7 +108,7 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
     sql = f"""
         SELECT id, timestamp, league, matchup, market, play_selection,
                play_odds, play_book, status, result, profit,
-               edge_score, smash_score
+               edge_score, smash_score, catboost_score
         FROM bets
         WHERE play_book = ANY(%s)
         {time_clause}
@@ -274,6 +274,12 @@ SMASH_SCORE_BUCKETS = [
     (55, 58, 'PLAY (55-58)', '#4ade80'),
     (58, 101, 'SMASH (58+)', '#00ff9f'),
 ]
+CAT_SCORE_BUCKETS = [
+    (0,  30,  'LOW (<30)',    '#ef4444'),
+    (30, 49,  'MID (30-49)', '#f59e0b'),
+    (49, 65,  'GOOD (49-65)','#4ade80'),
+    (65, 101, 'HIGH (65+)',  '#00ff9f'),
+]
 
 def score_bucket_roi(df, score_col, buckets, min_n=2):
     settled = df[df['status'].isin(['Won','Lost'])].dropna(subset=[score_col])
@@ -422,6 +428,15 @@ if HAS_SMASH_SCORE_SIDEBAR:
 else:
     min_smash, max_smash = 0.0, 100.0
 
+HAS_CAT_SCORE_SIDEBAR = 'catboost_score' in df.columns and (df['catboost_score'] > 0).sum() > 0
+if HAS_CAT_SCORE_SIDEBAR:
+    st.sidebar.markdown("**CatBoost Score Range**")
+    cb1, cb2 = st.sidebar.columns(2)
+    min_cat = cb1.number_input("Min CatBoost", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key="min_cat")
+    max_cat = cb2.number_input("Max CatBoost", value=100.0, min_value=0.0, max_value=100.0, step=1.0, key="max_cat")
+else:
+    min_cat, max_cat = 0.0, 100.0
+
 HAS_TWROI_SIDEBAR = 'twroi' in df.columns and df['twroi'].notna().sum() > 0
 if HAS_TWROI_SIDEBAR:
     st.sidebar.markdown("**TWROI Filter** *(alerted bets only)*")
@@ -479,6 +494,8 @@ if HAS_GEM_SCORE_SIDEBAR and (min_gem > 0.0 or max_gem < 100.0):
     df_f = df_f[df_f['gem_score'].notna() & (df_f['gem_score'] >= min_gem) & (df_f['gem_score'] <= max_gem)]
 if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
     df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
+if HAS_CAT_SCORE_SIDEBAR and (min_cat > 0.0 or max_cat < 100.0):
+    df_f = df_f[df_f['catboost_score'].notna() & (df_f['catboost_score'] > 0) & (df_f['catboost_score'] >= min_cat) & (df_f['catboost_score'] <= max_cat)]
 if HAS_TWROI_SIDEBAR and min_twroi > -100:
     df_f = df_f[df_f['twroi'].notna() & (df_f['twroi'] >= min_twroi)]
 if HAS_TRUE_EDGE_SIDEBAR and (min_true_edge > -100.0 or min_true_edge_n > 0):
@@ -497,6 +514,7 @@ closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 HAS_MY_SCORE  = 'edge_score' in df_f.columns and df_f['edge_score'].notna().sum() > 0
 HAS_GEM_SCORE = 'gem_score'  in df_f.columns and df_f['gem_score'].notna().sum() > 0
 HAS_SMASH_SCORE = 'smash_score' in df_f.columns and df_f['smash_score'].notna().sum() > 0
+HAS_CAT_SCORE = 'catboost_score' in df_f.columns and (df_f['catboost_score'] > 0).sum() > 0
 
 # ── Top metrics ──
 total_profit  = closed['profit'].sum() if not closed.empty else 0
@@ -546,7 +564,7 @@ with tab_log:
     extra_cols = []
     if status_scope == "All Bets (incl. Expired)" and 'likely_missed' in df_f.columns:
         extra_cols = ['likely_missed']
-    score_cols     = [c for c in ['edge_score','gem_score','smash_score'] if c in df_f.columns and df_f[c].notna().any()]
+    score_cols     = [c for c in ['edge_score','gem_score','smash_score','catboost_score'] if c in df_f.columns and df_f[c].notna().any()]
     twroi_cols     = [c for c in ['twroi','bk_twroi'] if c in df_f.columns and df_f[c].notna().any()]
     ewma_cols      = [c for c in ['ewma'] if c in df_f.columns and df_f[c].notna().any()]
     true_edge_cols = [c for c in ['true_edge','true_edge_n'] if c in df_f.columns and df_f[c].notna().any()]
@@ -570,6 +588,9 @@ with tab_log:
     if HAS_SMASH_SCORE:
         col_config["smash_score"] = st.column_config.ProgressColumn(
             "Smash Score", min_value=0, max_value=100, format="%.1f")
+    if HAS_CAT_SCORE:
+        col_config["catboost_score"] = st.column_config.ProgressColumn(
+            "🌲 CatBoost", min_value=0, max_value=100, format="%.1f")
     if 'twroi' in twroi_cols:
         col_config["twroi"]    = st.column_config.NumberColumn("Mkt TWROI",  format="%.1f%%")
     if 'bk_twroi' in twroi_cols:
@@ -1004,7 +1025,7 @@ with tab_edge:
     st.subheader("🎯 Edge Score Analysis")
     st.caption("Validating whether higher scores actually predict better outcomes on your real bets.")
 
-    if not HAS_MY_SCORE and not HAS_GEM_SCORE and not HAS_SMASH_SCORE:
+    if not HAS_MY_SCORE and not HAS_GEM_SCORE and not HAS_SMASH_SCORE and not HAS_CAT_SCORE:
         st.info(
             "No edge scores in the database yet. "
             "Scores are recorded on new bets as they are ingested by the tracker. "
@@ -1021,7 +1042,7 @@ with tab_edge:
     st.markdown("### 📊 Score Bucket → Actual ROI")
     st.caption("The core validation: do higher scores deliver higher ROI on your settled bets?")
 
-    val_c1, val_c2, val_c3 = st.columns(3)
+    val_c1, val_c2, val_c3, val_c4 = st.columns(4)
 
     with val_c1:
         if HAS_MY_SCORE:
@@ -1077,6 +1098,24 @@ with tab_edge:
                 fig_sv.update_layout(**LAYOUT, title="Smash Score → ROI", height=320, yaxis_title="ROI (%)")
                 st.plotly_chart(fig_sv, use_container_width=True)
 
+    with val_c4:
+        if HAS_CAT_SCORE:
+            cat_settled = settled_e[settled_e['catboost_score'] > 0]
+            cbkt = score_bucket_roi(cat_settled, 'catboost_score', CAT_SCORE_BUCKETS, min_n=2)
+            if not cbkt.empty:
+                fig_cv = go.Figure(go.Bar(
+                    x=cbkt['bucket'], y=cbkt['roi'],
+                    marker_color=cbkt['color'],
+                    text=[f"{r:+.1f}%<br>N={n:,}" for r,n in zip(cbkt['roi'],cbkt['n'])],
+                    textposition='outside', textfont=dict(size=11)
+                ))
+                fig_cv.add_hline(y=0, line_color='#30363d', line_width=2)
+                fig_cv.add_hline(y=baseline_roi, line_color='#a78bfa', line_dash='dash',
+                                 line_width=1, annotation_text=f"baseline {baseline_roi:+.1f}%",
+                                 annotation_position="bottom right")
+                fig_cv.update_layout(**LAYOUT, title="🌲 CatBoost → ROI", height=320, yaxis_title="ROI (%)")
+                st.plotly_chart(fig_cv, use_container_width=True)
+
     st.markdown("---")
 
     st.markdown("### 📅 Score Quality Over Time")
@@ -1105,12 +1144,18 @@ with tab_edge:
         wks = wks[wks['n']>=5]
         fig_time.add_trace(go.Scatter(x=wks['week'],y=wks['avg'],name='Smash Score (avg)',
             line=dict(color='#00ffcc',width=2),mode='lines+markers'))
+    if HAS_CAT_SCORE:
+        wkc = time_df[time_df['catboost_score'] > 0].dropna(subset=['catboost_score']).groupby('week')['catboost_score'].agg(['mean','count']).reset_index()
+        wkc.columns=['week','avg','n']
+        wkc = wkc[wkc['n']>=5]
+        fig_time.add_trace(go.Scatter(x=wkc['week'],y=wkc['avg'],name='🌲 CatBoost (avg)',
+            line=dict(color='#a78bfa',width=2),mode='lines+markers'))
 
     fig_time.update_layout(**LAYOUT,title="Weekly Average Score",height=300,
                             yaxis_title="Score (scaled)",xaxis_tickangle=-30)
     st.plotly_chart(fig_time, use_container_width=True)
 
-    hist_c1, hist_c2, hist_c3 = st.columns(3)
+    hist_c1, hist_c2, hist_c3, hist_c4 = st.columns(4)
     with hist_c1:
         if HAS_MY_SCORE:
             fig_h = go.Figure(go.Histogram(x=df_f['edge_score'].dropna(),nbinsx=20,
@@ -1141,6 +1186,16 @@ with tab_edge:
             fig_sh.update_layout(**LAYOUT,title="Smash Score Distribution",height=260,
                                   xaxis_title="Score",yaxis_title="# Bets")
             st.plotly_chart(fig_sh, use_container_width=True)
+    with hist_c4:
+        if HAS_CAT_SCORE:
+            fig_ch = go.Figure(go.Histogram(x=df_f[df_f['catboost_score']>0]['catboost_score'].dropna(),nbinsx=20,
+                marker_color='#a78bfa',opacity=0.8))
+            for lo,_,lbl,color in CAT_SCORE_BUCKETS[1:]:
+                fig_ch.add_vline(x=lo,line_color=color,line_dash='dash',line_width=1,
+                    annotation_text=lbl,annotation_position="top right",annotation_font_size=9)
+            fig_ch.update_layout(**LAYOUT,title="🌲 CatBoost Distribution",height=260,
+                                  xaxis_title="Score",yaxis_title="# Bets")
+            st.plotly_chart(fig_ch, use_container_width=True)
 
     st.markdown("---")
 
