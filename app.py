@@ -390,6 +390,9 @@ cons_range = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
 oc1, oc2   = st.sidebar.columns(2)
 min_odds   = oc1.number_input("Min Odds", value=int(df['odds_val'].min()), step=10)
 max_odds   = oc2.number_input("Max Odds", value=int(df['odds_val'].max()), step=10)
+st.sidebar.markdown("**Time of Day (EDT)**")
+time_range = st.sidebar.slider("Hour range", 0, 23, (7, 21),
+    format="%d:00", key="time_range")
 
 
 HAS_MY_SCORE_SIDEBAR = 'edge_score' in df.columns and df['edge_score'].notna().sum() > 0
@@ -459,6 +462,8 @@ elif preset == "Alerted Bets Only":
 
 if len(date_range)==2:
     df_f = df_f[(df_f['timestamp'].dt.date>=date_range[0])&(df_f['timestamp'].dt.date<=date_range[1])]
+if time_range != (0, 23):
+    df_f = df_f[(df_f['timestamp'].dt.hour >= time_range[0]) & (df_f['timestamp'].dt.hour <= time_range[1])]
 df_f = df_f[df_f['league'].isin(sel_leagues)]
 df_f = df_f[df_f['tier'].isin(sel_tiers)]
 df_f = df_f[df_f['primary_sharp'].isin(sel_sharps)]
