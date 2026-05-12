@@ -1140,51 +1140,81 @@ with tab_edge:
     st.markdown("---")
 
     st.markdown("### 🏆 Best Scoring Book × Market Combinations")
-    st.caption("Which combos score highest AND deliver real ROI?")
+    st.caption("Which combos score highest AND deliver real ROI? Sorted low→high so the best performers are at the bottom.")
 
     if HAS_MY_SCORE and not settled_e.empty:
         if 'bet_side' not in settled_e.columns:
             settled_e['bet_side'] = 'Other'
-        settled_e['bms_key'] = (settled_e['play_book'].fillna('')+' · '+
-                                 settled_e['market'].fillna('')+' · '+
-                                 settled_e['bet_side'].fillna(''))
 
         bms_min = st.slider("Min bets per combo", 5, 50, 10, key='bms_min')
-        
+
         def safe_roi(x):
             val = x.iloc[:, 0] if isinstance(x, pd.DataFrame) else x
             prof_val = pd.to_numeric(val, errors='coerce').fillna(0.0).sum()
             return (float(prof_val) / (len(val) * float(UNIT_SIZE))) * 100
 
-        combo_s = settled_e.groupby('bms_key').agg(
-            avg_score=('edge_score','mean'),
-            roi=('profit', safe_roi),
-            n=('profit','count'),
-            wr=('status',lambda x: (x=='Won').sum()/max(len(x),1)*100),
-        ).reset_index()
-        combo_s = combo_s[combo_s['n']>=bms_min].sort_values('roi',ascending=True).head(20)
+        def _bms_chart(data, key_col, title, chart_key):
+            if data.empty:
+                st.info("No data for this bet type in current filter.")
+                return
+            combo_s = data.groupby(key_col).agg(
+                avg_score=('edge_score', 'mean'),
+                roi=('profit', safe_roi),
+                n=('profit', 'count'),
+                wr=('status', lambda x: (x=='Won').sum() / max(len(x), 1) * 100),
+            ).reset_index()
+            combo_s = combo_s[combo_s['n'] >= bms_min].sort_values('roi', ascending=True).head(20)
+            if combo_s.empty:
+                st.info(f"No combos with ≥{bms_min} bets. Lower the minimum sample slider.")
+                return
+            fig = go.Figure(go.Bar(
+                x=combo_s['avg_score'], y=combo_s[key_col], orientation='h',
+                marker_color=[roi_color(r) for r in combo_s['roi']],
+                text=[f"Score:{s:.0f}  ROI:{r:+.1f}%  N={n}"
+                      for s, r, n in zip(combo_s['avg_score'], combo_s['roi'], combo_s['n'])],
+                textposition='outside', textfont=dict(size=10),
+            ))
+            fig.update_layout(**LAYOUT, title=title,
+                              height=max(380, len(combo_s) * 28), xaxis_title="Avg Edge Score")
+            fig.update_xaxes(range=[0, 100])
+            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+            disp = combo_s.copy()
+            disp['avg_score'] = disp['avg_score'].map('{:.0f}'.format)
+            disp['roi']       = disp['roi'].map('{:+.1f}%'.format)
+            disp['wr']        = disp['wr'].map('{:.0f}%'.format)
+            st.dataframe(disp.rename(columns={key_col: 'Combo', 'avg_score': 'Avg Score',
+                                               'n': 'Bets', 'roi': 'ROI', 'wr': 'WR'}),
+                         use_container_width=True, hide_index=True)
 
-        fig_bms = go.Figure(go.Bar(
-            x=combo_s['avg_score'], y=combo_s['bms_key'], orientation='h',
-            marker_color=[roi_color(r) for r in combo_s['roi']],
-            text=[f"Score:{s:.0f}  ROI:{r:+.1f}%  N={n}"
-                  for s,r,n in zip(combo_s['avg_score'],combo_s['roi'],combo_s['n'])],
-            textposition='outside', textfont=dict(size=10),
-        ))
-        fig_bms.update_layout(**LAYOUT,
-            title="Top 20 Combos by Avg Edge Score  (bar color = actual ROI)",
-            height=max(380, len(combo_s)*28), xaxis_title="Avg Edge Score"
-        )
-        fig_bms.update_xaxes(range=[0,100])
-        st.plotly_chart(fig_bms, use_container_width=True)
+        bms_t1, bms_t2, bms_t3, bms_t4 = st.tabs(
+            ["🏀 Player Props", "📊 Totals", "💰 Moneylines", "📏 Spreads"])
 
-        disp = combo_s.copy()
-        disp['avg_score'] = disp['avg_score'].map('{:.0f}'.format)
-        disp['roi']       = disp['roi'].map('{:+.1f}%'.format)
-        disp['wr']        = disp['wr'].map('{:.0f}%'.format)
-        st.dataframe(disp.rename(columns={'bms_key':'Combo','avg_score':'Avg Score',
-                                           'n':'Bets','roi':'ROI','wr':'WR'}),
-                     use_container_width=True, hide_index=True)
+        with bms_t1:
+            sub = settled_e[settled_e['bet_type'] == 'Player Prop'].copy()
+            sub['_key'] = (sub['play_book'].fillna('') + ' · ' +
+                           sub['market'].fillna('') + ' · ' +
+                           sub['bet_side'].fillna(''))
+            _bms_chart(sub, '_key', "Props — Book × Market × Side", 'bms_props')
+
+        with bms_t2:
+            sub = settled_e[settled_e['bet_type'] == 'Total'].copy()
+            pc_col = 'prop_cat' if 'prop_cat' in sub.columns else 'market'
+            sub['_key'] = (sub['play_book'].fillna('') + ' · ' +
+                           sub[pc_col].fillna('Game Total') + ' · ' +
+                           sub['bet_side'].fillna(''))
+            _bms_chart(sub, '_key', "Totals — Book × Total Type × Over/Under", 'bms_totals')
+
+        with bms_t3:
+            sub = settled_e[settled_e['bet_type'] == 'Moneyline'].copy()
+            sub['_key'] = (sub['play_book'].fillna('') + ' · ' +
+                           sub['league'].fillna(''))
+            _bms_chart(sub, '_key', "Moneylines — Book × League", 'bms_ml')
+
+        with bms_t4:
+            sub = settled_e[settled_e['bet_type'] == 'Point Spread'].copy()
+            sub['_key'] = (sub['play_book'].fillna('') + ' · ' +
+                           sub['league'].fillna(''))
+            _bms_chart(sub, '_key', "Spreads — Book × League", 'bms_spread')
 
     st.markdown("---")
 
