@@ -456,6 +456,14 @@ if HAS_TRUE_EDGE_SIDEBAR:
 else:
     min_true_edge, min_true_edge_n = -100.0, 0
 
+HAS_EWMA_SIDEBAR = 'ewma' in df.columns and df['ewma'].notna().sum() > 0
+if HAS_EWMA_SIDEBAR:
+    st.sidebar.markdown("**EWMA Momentum Filter** *(alerted bets only)*")
+    st.sidebar.caption("30-day exponentially weighted avg profit. 🟢 > +5%, 🟡 0–5%, 🔴 < 0%.")
+    min_ewma = st.sidebar.number_input("Min EWMA%", value=-100.0, step=1.0, format="%.0f", key="min_ewma")
+else:
+    min_ewma = -100.0
+
 # ── Apply filters ──
 df_f = df.copy()
 
@@ -507,6 +515,8 @@ if HAS_TRUE_EDGE_SIDEBAR and (min_true_edge > -100.0 or min_true_edge_n > 0):
     df_f = df_f[te_mask]
 if HAS_TWROI_SIDEBAR and min_bk_twroi > -100:
     df_f = df_f[df_f['bk_twroi'].notna() & (df_f['bk_twroi'] >= min_bk_twroi)]
+if HAS_EWMA_SIDEBAR and min_ewma > -100.0:
+    df_f = df_f[df_f['ewma'].notna() & (df_f['ewma'] >= min_ewma)]
 
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
@@ -1338,8 +1348,101 @@ with tab_edge:
         st.info("My edge score not in DB yet.")
 
     st.markdown("---")
+    st.markdown("### 📡 EWMA Momentum & True Edge Validation")
+    st.caption("Do bets with positive momentum (EWMA > 0) actually outperform? Settled alerted bets only — compares the signal value *at ingest* to actual outcome.")
+
+    HAS_EWMA_DATA = 'ewma' in closed.columns and closed['ewma'].notna().sum() >= 5
+    HAS_TE_DATA   = 'true_edge' in closed.columns and closed['true_edge'].notna().sum() >= 5
+
+    if not HAS_EWMA_DATA and not HAS_TE_DATA:
+        st.info("No EWMA or True Edge data on settled bets yet. These are stamped at ingest — bets from before the tracker stored them won't have values.")
+    else:
+        adv_c1, adv_c2 = st.columns(2)
+
+        with adv_c1:
+            if HAS_EWMA_DATA:
+                ewma_settled = closed.dropna(subset=['ewma']).copy()
+                ewma_settled['ewma_bucket'] = pd.cut(
+                    ewma_settled['ewma'],
+                    bins=[-9999, 0, 5, 9999],
+                    labels=['🔴 Negative (< 0%)', '🟡 Neutral (0–5%)', '🟢 Positive (> 5%)']
+                )
+                ewma_bkt = ewma_settled.groupby('ewma_bucket', observed=True).agg(
+                    n=('profit', 'count'),
+                    profit=('profit', 'sum')
+                ).reset_index()
+                ewma_bkt['roi'] = ewma_bkt['profit'] / (ewma_bkt['n'] * UNIT_SIZE) * 100
+                ewma_bkt = ewma_bkt[ewma_bkt['n'] >= 3]
+
+                if not ewma_bkt.empty:
+                    color_map = {
+                        '🔴 Negative (< 0%)': '#f87171',
+                        '🟡 Neutral (0–5%)':  '#fbbf24',
+                        '🟢 Positive (> 5%)': '#4ade80',
+                    }
+                    fig_ewma = go.Figure(go.Bar(
+                        x=ewma_bkt['ewma_bucket'],
+                        y=ewma_bkt['roi'],
+                        marker_color=[color_map.get(str(b), '#58a6ff') for b in ewma_bkt['ewma_bucket']],
+                        text=[f"{r:+.1f}%<br>N={n:,}" for r, n in zip(ewma_bkt['roi'], ewma_bkt['n'])],
+                        textposition='outside', textfont=dict(size=12),
+                    ))
+                    fig_ewma.add_hline(y=0, line_color='#30363d', line_width=2)
+                    fig_ewma.update_layout(**LAYOUT, title="ROI by EWMA Momentum Signal",
+                                           height=320, yaxis_title="Actual ROI (%)")
+                    st.plotly_chart(fig_ewma, use_container_width=True)
+                    disp_ewma = ewma_bkt.copy()
+                    disp_ewma['roi']    = disp_ewma['roi'].map('{:+.1f}%'.format)
+                    disp_ewma['profit'] = disp_ewma['profit'].map('${:,.0f}'.format)
+                    st.dataframe(disp_ewma.rename(columns={
+                        'ewma_bucket': 'EWMA Signal', 'n': 'Bets', 'roi': 'ROI', 'profit': 'Profit'
+                    }), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Not enough settled bets per EWMA bucket yet (need ≥ 3).")
+
+        with adv_c2:
+            if HAS_TE_DATA:
+                te_settled = closed.dropna(subset=['true_edge']).copy()
+                te_settled['te_bucket'] = pd.cut(
+                    te_settled['true_edge'],
+                    bins=[-9999, 0, 9999],
+                    labels=['🔴 Negative CI (< 0%)', '🟢 Positive CI (≥ 0%)']
+                )
+                te_bkt = te_settled.groupby('te_bucket', observed=True).agg(
+                    n=('profit', 'count'),
+                    profit=('profit', 'sum')
+                ).reset_index()
+                te_bkt['roi'] = te_bkt['profit'] / (te_bkt['n'] * UNIT_SIZE) * 100
+                te_bkt = te_bkt[te_bkt['n'] >= 3]
+
+                if not te_bkt.empty:
+                    te_color_map = {
+                        '🔴 Negative CI (< 0%)': '#f87171',
+                        '🟢 Positive CI (≥ 0%)': '#4ade80',
+                    }
+                    fig_te = go.Figure(go.Bar(
+                        x=te_bkt['te_bucket'],
+                        y=te_bkt['roi'],
+                        marker_color=[te_color_map.get(str(b), '#58a6ff') for b in te_bkt['te_bucket']],
+                        text=[f"{r:+.1f}%<br>N={n:,}" for r, n in zip(te_bkt['roi'], te_bkt['n'])],
+                        textposition='outside', textfont=dict(size=12),
+                    ))
+                    fig_te.add_hline(y=0, line_color='#30363d', line_width=2)
+                    fig_te.update_layout(**LAYOUT, title="ROI by True Edge (CI Lower Bound)",
+                                          height=320, yaxis_title="Actual ROI (%)")
+                    st.plotly_chart(fig_te, use_container_width=True)
+                    disp_te = te_bkt.copy()
+                    disp_te['roi']    = disp_te['roi'].map('{:+.1f}%'.format)
+                    disp_te['profit'] = disp_te['profit'].map('${:,.0f}'.format)
+                    st.dataframe(disp_te.rename(columns={
+                        'te_bucket': 'True Edge Signal', 'n': 'Bets', 'roi': 'ROI', 'profit': 'Profit'
+                    }), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Not enough settled bets per True Edge bucket yet (need ≥ 3).")
+
+    st.markdown("---")
     st.markdown("### 📋 Quick Summary")
-    
+
     cols = st.columns(6)
     idx = 0
     if HAS_MY_SCORE:
