@@ -388,6 +388,8 @@ sel_books   = st.sidebar.multiselect("Play Book", all_books, default=all_books)
 sel_types   = st.sidebar.multiselect("Bet Type",
     ['Moneyline','Player Prop','Point Spread','Total'],
     default=['Moneyline','Player Prop','Point Spread','Total'])
+sel_side = st.sidebar.radio("Bet Direction", ["Both", "Overs Only", "Unders Only"],
+    horizontal=True, key="sel_side")
 all_prop_cats = sorted(df['prop_cat'].dropna().unique()) if 'prop_cat' in df.columns else []
 sel_prop_cats = st.sidebar.multiselect("Prop / Total Category", all_prop_cats, default=[],
     placeholder="e.g. Hits, PRA, Team Total, 1st Half")
@@ -492,6 +494,10 @@ df_f = df_f[df_f['tier'].isin(sel_tiers)]
 df_f = df_f[df_f['primary_sharp'].isin(sel_sharps)]
 df_f = df_f[df_f['play_book'].isin(sel_books)]
 df_f = df_f[df_f['bet_type'].isin(sel_types)]
+if sel_side == "Overs Only":
+    df_f = df_f[df_f['bet_side'] == 'Over']
+elif sel_side == "Unders Only":
+    df_f = df_f[df_f['bet_side'] == 'Under']
 if sel_prop_cats and 'prop_cat' in df_f.columns:
     df_f = df_f[df_f['prop_cat'].isin(sel_prop_cats)]
 df_f = df_f[(df_f['consensus']>=cons_range[0])&(df_f['consensus']<=cons_range[1])]
