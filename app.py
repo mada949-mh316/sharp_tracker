@@ -404,10 +404,10 @@ sel_prop_cats = st.sidebar.multiselect("Prop / Total Category", all_prop_cats, d
 max_cons   = int(df['consensus'].max())
 cons_range = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
 oc1, oc2   = st.sidebar.columns(2)
-min_odds   = oc1.number_input("Min Odds", value=int(df['odds_val'].min()), step=10)
-max_odds   = oc2.number_input("Max Odds", value=int(df['odds_val'].max()), step=10)
+min_odds   = oc1.number_input("Min Odds", value=-200, step=10)
+max_odds   = oc2.number_input("Max Odds", value=200, step=10)
 st.sidebar.markdown("**Time of Day (EDT)**")
-time_range = st.sidebar.slider("Hour range", 0, 23, (7, 21),
+time_range = st.sidebar.slider("Hour range", 0, 23, (9, 21),
     format="%d:00", key="time_range")
 
 
@@ -433,7 +433,7 @@ HAS_SMASH_SCORE_SIDEBAR = 'smash_score' in df.columns and df['smash_score'].notn
 if HAS_SMASH_SCORE_SIDEBAR:
     st.sidebar.markdown("**Smash Score Range**")
     sc1, sc2 = st.sidebar.columns(2)
-    min_smash = sc1.number_input("Min Smash", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key="min_smash")
+    min_smash = sc1.number_input("Min Smash", value=50.0, min_value=0.0, max_value=100.0, step=1.0, key="min_smash")
     max_smash = sc2.number_input("Max Smash", value=100.0, min_value=0.0, max_value=100.0, step=1.0, key="max_smash")
 else:
     min_smash, max_smash = 0.0, 100.0
@@ -453,8 +453,12 @@ if HAS_TWROI_SIDEBAR:
     tw1, tw2 = st.sidebar.columns(2)
     min_twroi    = tw1.number_input("Min Mkt TWROI", value=-100, step=1, format="%d", key="min_twroi")
     min_bk_twroi = tw2.number_input("Min Bk TWROI",  value=-100, step=1, format="%d", key="min_bk_twroi")
+    tw3, tw4 = st.sidebar.columns(2)
+    max_twroi    = tw3.number_input("Max Mkt TWROI", value=9999, step=1, format="%d", key="max_twroi")
+    max_bk_twroi = tw4.number_input("Max Bk TWROI",  value=9999, step=1, format="%d", key="max_bk_twroi")
 else:
     min_twroi, min_bk_twroi = -100, -100
+    max_twroi, max_bk_twroi = 9999, 9999
 
 HAS_TRUE_EDGE_SIDEBAR = 'true_edge' in df.columns and df['true_edge'].notna().sum() > 0
 if HAS_TRUE_EDGE_SIDEBAR:
@@ -518,8 +522,8 @@ if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
     df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
 if HAS_CAT_SCORE_SIDEBAR and (min_cat > 0.0 or max_cat < 100.0):
     df_f = df_f[df_f['catboost_score'].notna() & (df_f['catboost_score'] > 0) & (df_f['catboost_score'] >= min_cat) & (df_f['catboost_score'] <= max_cat)]
-if HAS_TWROI_SIDEBAR and min_twroi > -100:
-    df_f = df_f[df_f['twroi'].notna() & (df_f['twroi'] >= min_twroi)]
+if HAS_TWROI_SIDEBAR and (min_twroi > -100 or max_twroi < 9999):
+    df_f = df_f[df_f['twroi'].notna() & (df_f['twroi'] >= min_twroi) & (df_f['twroi'] <= max_twroi)]
 if HAS_TRUE_EDGE_SIDEBAR and (min_true_edge > -100.0 or min_true_edge_n > 0):
     te_mask = df_f['true_edge'].notna()
     if min_true_edge > -100.0:
@@ -527,8 +531,8 @@ if HAS_TRUE_EDGE_SIDEBAR and (min_true_edge > -100.0 or min_true_edge_n > 0):
     if min_true_edge_n > 0:
         te_mask = te_mask & (df_f['true_edge_n'].fillna(0) >= min_true_edge_n)
     df_f = df_f[te_mask]
-if HAS_TWROI_SIDEBAR and min_bk_twroi > -100:
-    df_f = df_f[df_f['bk_twroi'].notna() & (df_f['bk_twroi'] >= min_bk_twroi)]
+if HAS_TWROI_SIDEBAR and (min_bk_twroi > -100 or max_bk_twroi < 9999):
+    df_f = df_f[df_f['bk_twroi'].notna() & (df_f['bk_twroi'] >= min_bk_twroi) & (df_f['bk_twroi'] <= max_bk_twroi)]
 if HAS_EWMA_SIDEBAR and min_ewma > -100.0:
     df_f = df_f[df_f['ewma'].notna() & (df_f['ewma'] >= min_ewma)]
 
