@@ -260,4 +260,4 @@ def count_bets() -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM bets")
-            return cur.fetchone()[0]"""
+            return cur.fetchone()[0]
