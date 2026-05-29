@@ -108,7 +108,7 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
     sql = f"""
         SELECT id, timestamp, league, matchup, market, play_selection,
                play_odds, play_book, status, result, profit,
-               edge_score, smash_score, catboost_score
+               edge_score, smash_score, catboost_score, placed
         FROM bets
         WHERE play_book = ANY(%s)
         {time_clause}
@@ -536,6 +536,21 @@ if HAS_TWROI_SIDEBAR and (min_bk_twroi > -100 or max_bk_twroi < 9999):
 if HAS_EWMA_SIDEBAR and min_ewma > -100.0:
     df_f = df_f[df_f['ewma'].notna() & (df_f['ewma'] >= min_ewma)]
 
+HAS_PLACED = 'placed' in df.columns and df['placed'].notna().any()
+if HAS_PLACED:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Placed Filter** *(your reaction tracking)*")
+    placed_filter = st.sidebar.radio(
+        "", ["All", "Placed ✅", "Missed ❌"], horizontal=True,
+        label_visibility="collapsed", key="placed_filter"
+    )
+    if placed_filter == "Placed ✅":
+        df_f = df_f[df_f['placed'] == True]
+    elif placed_filter == "Missed ❌":
+        df_f = df_f[df_f['placed'] == False]
+else:
+    placed_filter = "All"
+
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
 # ── Score column detection ──
@@ -568,6 +583,27 @@ c6.metric("Filter",      preset if preset!="All Bets" else selected_window)
 c7.metric("Expired",     f"{expired_n:,}",
           delta=f"{likely_missed_n} likely missed" if likely_missed_n > 0 else None,
           delta_color="inverse" if likely_missed_n > 0 else "normal")
+
+if HAS_PLACED:
+    placed_closed = df[df['placed'] == True]
+    placed_closed = placed_closed[placed_closed['status'].isin(['Won','Lost','Push'])]
+    missed_closed = df[df['placed'] == False]
+    missed_closed = missed_closed[missed_closed['status'].isin(['Won','Lost','Push'])]
+    p_profit = placed_closed['profit'].sum() if not placed_closed.empty else 0
+    p_wagered = len(placed_closed) * UNIT_SIZE
+    p_roi = (p_profit / p_wagered * 100) if p_wagered > 0 else 0
+    p_wr = (placed_closed['status'] == 'Won').sum() / max(len(placed_closed[placed_closed['status'] != 'Push']), 1) * 100
+    m_profit = missed_closed['profit'].sum() if not missed_closed.empty else 0
+    m_wagered = len(missed_closed) * UNIT_SIZE
+    m_roi = (m_profit / m_wagered * 100) if m_wagered > 0 else 0
+    tracked_n = int(df['placed'].notna().sum())
+    pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+    pc1.metric("✅ Placed Bets",   f"{len(placed_closed):,} settled")
+    pc2.metric("✅ Placed Profit",  f"${p_profit:,.0f}", delta=f"{p_roi:.1f}% ROI")
+    pc3.metric("✅ Placed Win Rate", f"{p_wr:.1f}%")
+    pc4.metric("❌ Missed ROI",     f"{m_roi:.1f}%", delta=f"{len(missed_closed)} settled")
+    pc5.metric("Tracked",           f"{tracked_n:,} reacted")
+
 st.markdown("---")
 
 
@@ -592,6 +628,8 @@ with tab_log:
     extra_cols = []
     if status_scope == "All Bets (incl. Expired)" and 'likely_missed' in df_f.columns:
         extra_cols = ['likely_missed']
+    if HAS_PLACED and 'placed' in df_f.columns:
+        extra_cols = [c for c in extra_cols if c != 'placed'] + ['placed']
     score_cols     = [c for c in ['edge_score','gem_score','smash_score','catboost_score'] if c in df_f.columns and df_f[c].notna().any()]
     twroi_cols     = [c for c in ['twroi','bk_twroi'] if c in df_f.columns and df_f[c].notna().any()]
     ewma_cols      = [c for c in ['ewma'] if c in df_f.columns and df_f[c].notna().any()]
