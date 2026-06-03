@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import re
 import numpy as np
 from datetime import datetime, timedelta
 
@@ -300,6 +301,88 @@ def score_bucket_roi(df, score_col, buckets, min_n=2):
         wr  = (sub['status'] == 'Won').mean() * 100
         rows.append({'bucket': lbl, 'lo': lo, 'roi': roi, 'n': len(sub), 'wr': wr, 'color': color})
     return pd.DataFrame(rows)
+
+
+# ─────────────────────────────────────────────────────────────
+# POST SCORE  (mirrors compute_post_score in tracker.py — keep in sync)
+# Lets the dashboard recompute the stamped score from stored fields so you can
+# verify the live scores are still hitting their backtested ROI.
+# ─────────────────────────────────────────────────────────────
+POST_AVOID = ['Player Steals', 'Player Assists', 'Player Points + Assists', 'Pitcher Walks Allowed']
+POST_GOOD_SPREAD_BOOKS = ('caesars', 'fanduel', 'thescore')
+POST_EXPECTED = {  # backtested post-zone ROI for reference lines
+    'Prop':   ('3-4/4', 13.0), 'Total': ('2-3/3', 15.0), 'Spread': ('2-3/3', 12.0),
+}
+
+def _imp_prob(o):
+    try: o = float(o)
+    except (TypeError, ValueError): return None
+    if o == 0: return None
+    return abs(o) / (abs(o) + 100) if o < 0 else 100 / (o + 100)
+
+def _row_sharp_gap(odds_val, sharp_odds_str):
+    pi = _imp_prob(odds_val)
+    if pi is None: return None
+    nums = re.findall(r'-?\d+\.?\d*', str(sharp_odds_str))
+    sis = [_imp_prob(float(n)) for n in nums]; sis = [x for x in sis if x is not None]
+    return (sum(sis) / len(sis) - pi) if sis else None
+
+@st.cache_data(ttl=300)
+def compute_post_scores(df_in):
+    """Recompute the per-bet Post Score (props 0-4 on DK/Caes/FD, totals 0-3,
+    spreads 0-3) for settled bets in the -200/+200 range. Includes the
+    point-in-time 'hot' prop factor (trailing-30d seg ROI >= 8%)."""
+    d = df_in[df_in['status'].isin(['Won', 'Lost'])].copy()
+    d['odds_val']     = pd.to_numeric(d['odds_val'], errors='coerce')
+    d = d[(d['odds_val'] >= -200) & (d['odds_val'] <= 200)].copy()
+    if d.empty:
+        return d
+    d['profit']       = pd.to_numeric(d['profit'], errors='coerce').fillna(0.0)
+    d['smash_score']  = pd.to_numeric(d['smash_score'], errors='coerce')
+    d['consensus']    = pd.to_numeric(d['consensus'], errors='coerce').fillna(1)
+    d['book']         = d['play_book'].astype(str).str.lower()
+    d['gap']          = d.apply(lambda r: _row_sharp_gap(r['odds_val'], r.get('sharp_odds', '')), axis=1)
+    d = d.sort_values('timestamp')
+
+    # point-in-time 'hot' for props
+    prior = pd.Series(np.nan, index=d.index)
+    props = d[d['bet_type'] == 'Player Prop'].copy()
+    props['seg'] = (props['league'].astype(str) + '|' + props['prop_cat'].astype(str)
+                    + '|' + props['bet_side'].astype(str))
+    win = pd.Timedelta(days=30).to_timedelta64()
+    for _, idxs in props.groupby('seg').groups.items():
+        sub = props.loc[idxs].sort_values('timestamp'); ii = sub.index.values
+        ts = sub['timestamp'].values; pf = sub['profit'].values; j0 = 0
+        for k in range(len(sub)):
+            while ts[j0] < ts[k] - win: j0 += 1
+            seg = pf[j0:k]
+            if len(seg) >= 8:
+                prior.loc[ii[k]] = seg.sum() / (len(seg) * 100) * 100
+    d['hot'] = prior.notna() & (prior >= 8)
+
+    b3 = d['book'].apply(lambda s: ('draftkings' in s and '6' not in s) or 'fanduel' in s or 'caesars' in s)
+
+    def _score(r):
+        bt, side, mkt, o = r['bet_type'], r['bet_side'], str(r['market']), r['odds_val']
+        gap_ok = (r['gap'] is not None) and (r['gap'] >= 0.02)
+        if bt == 'Player Prop':
+            sc = (int(side == 'Under') + int(not any(a in mkt for a in POST_AVOID))
+                  + int(gap_ok) + int(bool(r['hot'])))
+            return pd.Series([sc, 4, 'Prop'])
+        if bt == 'Total':
+            sc = int(gap_ok) + int(side == 'Under') + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
+            return pd.Series([sc, 3, 'Total'])
+        if bt in ('Point Spread', 'Spread'):
+            sc = (int(any(b in r['book'] for b in POST_GOOD_SPREAD_BOOKS))
+                  + int(r['consensus'] >= 2) + int(o > 0))
+            return pd.Series([sc, 3, 'Spread'])
+        sc = int(gap_ok) + int(o > 0)
+        return pd.Series([sc, 2, 'Moneyline'])
+
+    d[['post_score', 'post_max', 'post_kind']] = d.apply(_score, axis=1)
+    # the prop score is only validated on DK/Caesars/FanDuel
+    d.loc[(d['post_kind'] == 'Prop') & (~b3), 'post_kind'] = 'Prop (other book)'
+    return d
 
 
 # ─────────────────────────────────────────────────────────────
@@ -611,10 +694,11 @@ st.markdown("---")
 # TABS
 # ─────────────────────────────────────────────────────────────
 (tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
- tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs) = st.tabs([
+ tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post) = st.tabs([
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
-    "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks"
+    "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks",
+    "🎯 Post Score"
 ])
 
 
@@ -1953,6 +2037,92 @@ with tab_dfs:
             st.dataframe(pd.DataFrame(slip_rows), use_container_width=True, hide_index=True)
         else:
             st.info("No slips match this filter.")
+
+
+# ─── POST SCORE TRACKER ───────────────────────────────────────
+with tab_post:
+    st.subheader("🎯 Post Score — is it still matching backtested ROI?")
+    st.caption("Recomputes the stamped Post Score from each settled bet and shows ROI by score, "
+               "so you can confirm the live scores keep delivering. GOLD tier, −200/+200. "
+               "Props scored on DK/Caesars/FanDuel; totals & spreads across all books.")
+
+    gold = df[df['tier'] == 'GOLD'].copy()
+    ps_df = compute_post_scores(gold)
+
+    if ps_df.empty:
+        st.info("No settled GOLD bets in the −200/+200 range for this window yet.")
+    else:
+        kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread"], horizontal=True, key="post_kind_sel")
+        sub = ps_df[ps_df['post_kind'] == kind_sel].copy()
+        maxv = {'Prop': 4, 'Total': 3, 'Spread': 3}[kind_sel]
+        post_zone, exp_roi = POST_EXPECTED.get(kind_sel, ('', 0))
+
+        if sub.empty:
+            st.warning(f"No settled {kind_sel} bets in this window.")
+        else:
+            # ROI by score bucket
+            rows = []
+            for s in range(maxv + 1):
+                b = sub[sub['post_score'] == s]
+                if b.empty:
+                    continue
+                rows.append({'score': f"{s}/{maxv}", 'n': len(b),
+                             'roi': b['profit'].sum() / (len(b) * UNIT_SIZE) * 100,
+                             'wr': (b['status'] == 'Won').mean() * 100,
+                             'profit': b['profit'].sum()})
+            bdf = pd.DataFrame(rows)
+
+            c1, c2 = st.columns([3, 2])
+            with c1:
+                fig = go.Figure(go.Bar(
+                    x=bdf['score'], y=bdf['roi'],
+                    marker_color=[roi_color(v) for v in bdf['roi']],
+                    text=[f"{r:+.1f}%<br>N={n}" for r, n in zip(bdf['roi'], bdf['n'])],
+                    textposition='outside', textfont=dict(size=11)))
+                fig.add_hline(y=0, line_color='#30363d', line_width=2)
+                fig.add_hline(y=exp_roi, line_color='#58a6ff', line_dash='dash', line_width=1,
+                              annotation_text=f"backtest post-zone {exp_roi:+.0f}%",
+                              annotation_position="top left")
+                fig.update_layout(**LAYOUT, title=f"{kind_sel} — ROI by Post Score",
+                                  height=340, yaxis_title="ROI (%)")
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                disp = bdf.copy()
+                disp['roi'] = disp['roi'].map('{:+.1f}%'.format)
+                disp['wr'] = disp['wr'].map('{:.0f}%'.format)
+                disp['profit'] = disp['profit'].map('${:,.0f}'.format)
+                st.dataframe(disp.rename(columns={'score': 'Score', 'n': 'Bets', 'roi': 'ROI',
+                                                  'wr': 'WR', 'profit': 'Profit'}),
+                             use_container_width=True, hide_index=True)
+                st.caption(f"**Post zone = {post_zone}** (backtest ≈ {exp_roi:+.0f}%). "
+                           "If recent ROI there drifts well below this, the edge is fading.")
+
+            # post-zone ROI over time (are recent weeks holding up?)
+            st.markdown("---")
+            st.markdown("**Post-zone ROI over time** (weekly, the bets you'd actually post)")
+            thresh = 3 if kind_sel == 'Prop' else 2
+            pz = sub[sub['post_score'] >= thresh].copy()
+            if len(pz) >= 10:
+                pz['week'] = pz['timestamp'].dt.to_period('W').astype(str)
+                wk = pz.groupby('week').agg(profit=('profit', 'sum'), n=('profit', 'count')).reset_index()
+                wk = wk[wk['n'] >= 5]
+                wk['roi'] = wk['profit'] / (wk['n'] * UNIT_SIZE) * 100
+                if not wk.empty:
+                    figw = go.Figure(go.Scatter(x=wk['week'], y=wk['roi'], mode='lines+markers',
+                                                line=dict(color='#4ade80', width=2),
+                                                text=[f"N={n}" for n in wk['n']]))
+                    figw.add_hline(y=0, line_color='#30363d')
+                    figw.add_hline(y=exp_roi, line_color='#58a6ff', line_dash='dash',
+                                   annotation_text=f"backtest {exp_roi:+.0f}%")
+                    figw.update_layout(**LAYOUT, height=300, yaxis_title="ROI (%)",
+                                       title=f"{kind_sel} post-zone (score ≥ {thresh}) weekly ROI",
+                                       xaxis_tickangle=-30)
+                    st.plotly_chart(figw, use_container_width=True)
+                pz_roi = pz['profit'].sum() / (len(pz) * UNIT_SIZE) * 100
+                st.metric(f"{kind_sel} post-zone overall (this window)",
+                          f"{pz_roi:+.1f}% ROI", delta=f"{len(pz)} bets · vs backtest {exp_roi:+.0f}%")
+            else:
+                st.info(f"Only {len(pz)} post-zone {kind_sel} bets in this window — widen the data window for a trend.")
 
 
 # ─── DEBUG ────────────────────────────────────────────────────
