@@ -2046,11 +2046,19 @@ with tab_post:
                "so you can confirm the live scores keep delivering. GOLD tier, −200/+200. "
                "Props scored on DK/Caesars/FanDuel; totals & spreads across all books.")
 
+    # Score on the FULL loaded window first (so the point-in-time 'hot' factor has
+    # prior history), THEN slice to the selected date range for display.
     gold = df[df['tier'] == 'GOLD'].copy()
     ps_df = compute_post_scores(gold)
+    if not ps_df.empty and len(date_range) == 2:
+        ps_df = ps_df[(ps_df['timestamp'].dt.date >= date_range[0]) &
+                      (ps_df['timestamp'].dt.date <= date_range[1])]
+    if len(date_range) == 2:
+        st.caption(f"📅 Showing **{date_range[0]} → {date_range[1]}** "
+                   f"(scores computed with full-window history; change the Date Range in the sidebar).")
 
     if ps_df.empty:
-        st.info("No settled GOLD bets in the −200/+200 range for this window yet.")
+        st.info("No settled GOLD bets in the −200/+200 range for this date range yet.")
     else:
         kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread"], horizontal=True, key="post_kind_sel")
         sub = ps_df[ps_df['post_kind'] == kind_sel].copy()
