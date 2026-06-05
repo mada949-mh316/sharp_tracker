@@ -310,6 +310,7 @@ def score_bucket_roi(df, score_col, buckets, min_n=2):
 # ─────────────────────────────────────────────────────────────
 POST_AVOID = ['Player Steals', 'Player Assists', 'Player Points + Assists', 'Pitcher Walks Allowed']
 POST_GOOD_SPREAD_BOOKS = ('caesars', 'fanduel', 'thescore')
+POST_TOTAL_OVER_SPORTS = ('MLB', 'WNBA')  # totals: OVERS win here; elsewhere Unders
 POST_EXPECTED = {  # backtested post-zone ROI for reference lines
     'Prop':   ('3-4/4', 13.0), 'Total': ('2-3/3', 15.0), 'Spread': ('2-3/3', 12.0),
 }
@@ -370,7 +371,9 @@ def compute_post_scores(df_in):
                   + int(gap_ok) + int(bool(r['hot'])))
             return pd.Series([sc, 4, 'Prop'])
         if bt == 'Total':
-            sc = int(gap_ok) + int(side == 'Under') + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
+            over_sport = str(r['league']) in POST_TOTAL_OVER_SPORTS
+            side_ok = (side == 'Over') if over_sport else (side == 'Under')
+            sc = int(gap_ok) + int(side_ok) + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
             return pd.Series([sc, 3, 'Total'])
         if bt in ('Point Spread', 'Spread'):
             sc = (int(any(b in r['book'] for b in POST_GOOD_SPREAD_BOOKS))
