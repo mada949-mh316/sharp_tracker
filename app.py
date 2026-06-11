@@ -2046,22 +2046,30 @@ with tab_dfs:
 with tab_post:
     st.subheader("🎯 Post Score — is it still matching backtested ROI?")
     st.caption("Recomputes the stamped Post Score from each settled bet and shows ROI by score, "
-               "so you can confirm the live scores keep delivering. GOLD tier, −200/+200. "
-               "Props scored on DK/Caesars/FanDuel; totals & spreads across all books.")
+               "so you can confirm the live scores keep delivering. **Now responds to every sidebar "
+               "filter** (league, book, tier, bet type, odds, side, date, etc.). "
+               "⚠️ The score was validated on **Tier = GOLD** + **DK/Caesars/FanDuel** at **−200/+200** — "
+               "set those in the sidebar to match the backtest; other settings are exploratory "
+               "(SILVER/STANDARD are known to invert).")
 
-    # Score on the FULL loaded window first (so the point-in-time 'hot' factor has
-    # prior history), THEN slice to the selected date range for display.
-    gold = df[df['tier'] == 'GOLD'].copy()
-    ps_df = compute_post_scores(gold)
-    if not ps_df.empty and len(date_range) == 2:
-        ps_df = ps_df[(ps_df['timestamp'].dt.date >= date_range[0]) &
-                      (ps_df['timestamp'].dt.date <= date_range[1])]
-    if len(date_range) == 2:
-        st.caption(f"📅 Showing **{date_range[0]} → {date_range[1]}** "
-                   f"(scores computed with full-window history; change the Date Range in the sidebar).")
+    # Score on the FULL loaded data first (so the point-in-time 'hot' factor keeps
+    # its prior history), THEN restrict to rows that survived ALL sidebar filters
+    # by intersecting on the dataframe index with df_f.
+    ps_full = compute_post_scores(df)
+    ps_df = ps_full.loc[ps_full.index.intersection(df_f.index)] if not ps_full.empty else ps_full
+
+    active = []
+    if sel_leagues and len(sel_leagues) < len(all_leagues): active.append(f"{len(sel_leagues)} league(s)")
+    if sel_tiers and set(sel_tiers) != set(TIER_ORDER):     active.append("tier")
+    if sel_books and len(sel_books) < len(all_books):       active.append("book")
+    if sel_side != "Both":                                  active.append(sel_side)
+    if (min_odds, max_odds) != (-200, 200):                 active.append(f"odds {min_odds}/{max_odds}")
+    if len(date_range) == 2:                                active.append(f"{date_range[0]}→{date_range[1]}")
+    st.caption("📅 Filters applied: " + (", ".join(active) if active else "none (full default view)"))
 
     if ps_df.empty:
-        st.info("No settled GOLD bets in the −200/+200 range for this date range yet.")
+        st.info("No settled bets match the current sidebar filters (need GOLD-tier defaults & −200/+200 "
+                "for the validated view).")
     else:
         kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread"], horizontal=True, key="post_kind_sel")
         sub = ps_df[ps_df['post_kind'] == kind_sel].copy()
