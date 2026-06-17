@@ -26,7 +26,7 @@ CREDS_FILE  = "creds.json"
 
 DFS_BOOKS     = ['PrizePicks', 'Betr', 'Dabble', 'Underdog', 'Sleeper', 'Draftkings6', 'DraftKings6']
 # Temporarily removed 'NCAAB' and 'Tennis' due to heavy negative ROI all-time
-VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAF', 'UFC', 'MLB', 'WNBA']
+VALID_LEAGUES = ['NBA', 'NFL', 'NHL', 'NCAAF', 'UFC', 'MLB', 'WNBA', 'Soccer']
 
 # Tier scoring thresholds
 GOOD_ODDS_MIN       = -150   
@@ -104,7 +104,7 @@ PROP_CATEGORY_LEAGUE_BLACKLIST = {
 }
 
 # Demoted Polymarket here to reduce weighting influence (-2.8% ROI)
-LOW_CONFIDENCE_BOOKS = {"Kalshi", "Polymarket"}
+LOW_CONFIDENCE_BOOKS = {"Kalshi"}
 
 LEAGUE_SHARP_BOOK_SUPPRESS = {
     "Tennis": {"NoVigApp", "Prophet", "Pinnacle"},
@@ -180,7 +180,7 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
     if db_url:
         try:
             import psycopg2, pandas as _pd
-            conn = psycopg2.connect(db_url, sslmode='disable')
+            conn = psycopg2.connect(db_url, sslmode='disable', connect_timeout=8)
             df = _pd.read_sql(
                 "SELECT play_selection, market, league, play_odds, play_book, "
                 "       sharp_book, liquidity, profit, status, timestamp "
