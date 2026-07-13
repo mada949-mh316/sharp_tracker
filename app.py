@@ -58,6 +58,18 @@ section[data-testid="stSidebar"] * { color: #e6edf3 !important; }
 # DATA LOADING
 # ─────────────────────────────────────────────────────────────
 
+def _get_db_url():
+    """DB URL from env var (local/droplet) or Streamlit secrets (Cloud).
+    No hardcoded credentials — set DATABASE_URL in the environment or in
+    the app's Streamlit secrets."""
+    url = os.environ.get('DATABASE_URL', '')
+    if not url:
+        try:
+            url = st.secrets['DATABASE_URL']
+        except Exception:
+            url = ''
+    return url
+
 @st.cache_data(ttl=300)
 def fetch_from_db(days_back: int) -> pd.DataFrame:
     raw = load_bets(days_back=days_back if days_back > 0 else None)
@@ -79,7 +91,7 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def fetch_parlays() -> pd.DataFrame:
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', '')
+    db_url = _get_db_url()
     conn = psycopg2.connect(db_url, sslmode='disable')
     df = pd.read_sql("""
         SELECT id, created_at, n_legs, book,
@@ -99,7 +111,7 @@ def fetch_parlays() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', '')
+    db_url = _get_db_url()
     conn = psycopg2.connect(db_url, sslmode='disable')
     params: list = [DFS_BOOKS]
     time_clause = ""
@@ -155,7 +167,7 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
 def fetch_dfs_picks() -> pd.DataFrame:
     """Load DFS combo slips from the dfs_picks table."""
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', '')
+    db_url = _get_db_url()
     conn = psycopg2.connect(db_url, sslmode='disable')
     try:
         with conn.cursor() as cur:
