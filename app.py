@@ -261,8 +261,110 @@ def calc_roi(df, group_col, min_n=5):
 
 
 # ─────────────────────────────────────────────────────────────
+# STABILITY / GOLDEN RULE HELPER
+# A signal is only trustworthy if it holds direction in BOTH halves of the
+# data (split at the median timestamp). Every ROI number in this dashboard
+# that claims to validate a signal should be run through this.
+# ─────────────────────────────────────────────────────────────
+
+def stability(sub_df, ts_col='timestamp', unit=UNIT_SIZE):
+    """Split a settled-bet subset at the median timestamp into H1 (before)
+    and H2 (>=). Returns overall/H1/H2 ROI% + N, and a verdict:
+      'STABLE'   — H1 and H2 have the same sign AND are within 10 pts of each other
+      'UNSTABLE' — they disagree on sign or diverge by >= 10 pts
+      'thin'     — not enough data to judge (overall N < 20 or either half N < 5)
+    Never throws — missing columns / empty input just yield a 'thin' verdict.
+    """
+    out = {'overall_roi': 0.0, 'n': 0, 'h1_roi': 0.0, 'h1_n': 0,
+           'h2_roi': 0.0, 'h2_n': 0, 'verdict': 'thin'}
+    if sub_df is None or len(sub_df) == 0:
+        return out
+    if ts_col not in sub_df.columns or 'profit' not in sub_df.columns:
+        return out
+    d = sub_df.dropna(subset=[ts_col]).copy()
+    n = len(d)
+    out['n'] = n
+    if n == 0:
+        return out
+    profit_sum = pd.to_numeric(d['profit'], errors='coerce').fillna(0.0).sum()
+    out['overall_roi'] = (profit_sum / (n * unit)) * 100
+    if n < 20:
+        return out
+    med = d[ts_col].median()
+    h1 = d[d[ts_col] < med]
+    h2 = d[d[ts_col] >= med]
+    out['h1_n'] = len(h1)
+    out['h2_n'] = len(h2)
+    if len(h1) < 5 or len(h2) < 5:
+        return out
+    out['h1_roi'] = (pd.to_numeric(h1['profit'], errors='coerce').fillna(0.0).sum() / (len(h1) * unit)) * 100
+    out['h2_roi'] = (pd.to_numeric(h2['profit'], errors='coerce').fillna(0.0).sum() / (len(h2) * unit)) * 100
+    same_sign    = (out['h1_roi'] >= 0) == (out['h2_roi'] >= 0)
+    close_enough = abs(out['h1_roi'] - out['h2_roi']) < 10
+    out['verdict'] = 'STABLE' if (same_sign and close_enough) else 'UNSTABLE'
+    return out
+
+
+def verdict_badge(verdict):
+    return {'STABLE': '✅ STABLE', 'UNSTABLE': '🔴 UNSTABLE', 'thin': '➖ thin'}.get(verdict, '➖ thin')
+
+
+def with_stability_multi(base_df, source_df, group_cols, unit=UNIT_SIZE):
+    """Given a per-group summary df (must contain group_cols) and the underlying
+    settled-bet source_df, run `stability()` for each group and append
+    h1_roi/h1_n/h2_roi/h2_n/verdict/stability_badge columns. Additive only —
+    never drops existing columns."""
+    out = base_df.reset_index(drop=True).copy()
+    if out.empty:
+        for c in ['h1_roi', 'h1_n', 'h2_roi', 'h2_n', 'verdict', 'stability_badge']:
+            out[c] = pd.Series(dtype='object')
+        return out
+    recs = []
+    for _, row in out[group_cols].iterrows():
+        try:
+            mask = pd.Series(True, index=source_df.index)
+            for c in group_cols:
+                mask &= (source_df[c] == row[c])
+            recs.append(stability(source_df[mask], unit=unit))
+        except Exception:
+            recs.append(stability(None))
+    sdf = pd.DataFrame(recs)
+    for c in ['h1_roi', 'h1_n', 'h2_roi', 'h2_n', 'verdict']:
+        out[c] = sdf[c].values
+    out['stability_badge'] = out['verdict'].apply(verdict_badge)
+    return out
+
+
+def with_stability(base_df, source_df, group_col, unit=UNIT_SIZE):
+    return with_stability_multi(base_df, source_df, [group_col], unit=unit)
+
+
+def render_stability_table(stats_df, group_col, label, extra_cols=None):
+    """Render a group summary (with roi/n + stability cols from with_stability)
+    as a dataframe: <label>, N, ROI, H1 ROI, H1 N, H2 ROI, H2 N, Stability."""
+    if stats_df is None or stats_df.empty or 'verdict' not in stats_df.columns:
+        return
+    d = stats_df.copy()
+    d['ROI']    = d['roi'].map('{:+.1f}%'.format)
+    d['H1 ROI'] = d['h1_roi'].map('{:+.1f}%'.format)
+    d['H2 ROI'] = d['h2_roi'].map('{:+.1f}%'.format)
+    d = d.rename(columns={group_col: label, 'n': 'N', 'h1_n': 'H1 N', 'h2_n': 'H2 N',
+                           'stability_badge': 'Stability'})
+    cols = [label, 'N', 'ROI', 'H1 ROI', 'H1 N', 'H2 ROI', 'H2 N'] + (extra_cols or []) + ['Stability']
+    cols = [c for c in cols if c in d.columns]
+    st.dataframe(d[cols], use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────
 # EDGE SCORE CONSTANTS & HELPERS
 # ─────────────────────────────────────────────────────────────
+
+# Go-live dates for model scores. Any score recorded before its model's
+# go-live date on a given bet was BACKFILLED — i.e. scored with lookahead
+# knowledge of the outcome — and its ROI is not trustworthy. Score→ROI
+# validation for these models must filter to timestamp >= go-live.
+CATBOOST_LIVE     = pd.Timestamp('2026-05-12', tz='US/Eastern')
+SPORT_MODEL_LIVE  = pd.Timestamp('2026-05-20', tz='US/Eastern')
 
 MY_SCORE_BUCKETS = [
     (0,  20,  'AVOID', '#ef4444'),
@@ -299,8 +401,25 @@ def score_bucket_roi(df, score_col, buckets, min_n=2):
             continue
         roi = sub['profit'].sum() / (len(sub) * UNIT_SIZE) * 100
         wr  = (sub['status'] == 'Won').mean() * 100
-        rows.append({'bucket': lbl, 'lo': lo, 'roi': roi, 'n': len(sub), 'wr': wr, 'color': color})
+        s = stability(sub)
+        rows.append({'bucket': lbl, 'lo': lo, 'roi': roi, 'n': len(sub), 'wr': wr, 'color': color,
+                     'h1_roi': s['h1_roi'], 'h1_n': s['h1_n'], 'h2_roi': s['h2_roi'], 'h2_n': s['h2_n'],
+                     'verdict': s['verdict']})
     return pd.DataFrame(rows)
+
+
+def render_bucket_stability(bkt_df):
+    """Small H1/H2/verdict table for a score_bucket_roi() result."""
+    if bkt_df is None or bkt_df.empty or 'verdict' not in bkt_df.columns:
+        return
+    d = bkt_df.copy()
+    d['ROI'] = d['roi'].map('{:+.1f}%'.format)
+    d['H1']  = d['h1_roi'].map('{:+.1f}%'.format)
+    d['H2']  = d['h2_roi'].map('{:+.1f}%'.format)
+    d['Stability'] = d['verdict'].apply(verdict_badge)
+    d = d.rename(columns={'bucket': 'Bucket', 'n': 'N', 'h1_n': 'H1 N', 'h2_n': 'H2 N'})
+    st.dataframe(d[['Bucket', 'N', 'ROI', 'H1', 'H1 N', 'H2', 'H2 N', 'Stability']],
+                 use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -637,6 +756,17 @@ if HAS_PLACED:
 else:
     placed_filter = "All"
 
+# ── Sharp gap (mean sharp implied prob - play implied prob), in percentage points ──
+if 'sharp_odds' in df_f.columns and 'odds_val' in df_f.columns:
+    try:
+        _gaps = df_f.apply(
+            lambda r: _row_sharp_gap(r.get('odds_val'), r.get('sharp_odds', '')), axis=1)
+        df_f['sharp_gap_pct'] = pd.to_numeric(_gaps, errors='coerce') * 100
+    except Exception:
+        df_f['sharp_gap_pct'] = np.nan
+else:
+    df_f['sharp_gap_pct'] = np.nan
+
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
 # ── Score column detection ──
@@ -689,6 +819,151 @@ if HAS_PLACED:
     pc3.metric("✅ Placed Win Rate", f"{p_wr:.1f}%")
     pc4.metric("❌ Missed ROI",     f"{m_roi:.1f}%", delta=f"{len(missed_closed)} settled")
     pc5.metric("Tracked",           f"{tracked_n:,} reacted")
+
+st.markdown("---")
+
+
+# ─────────────────────────────────────────────────────────────
+# ✅ WHAT'S WORKING (AND STABLE)
+# ─────────────────────────────────────────────────────────────
+st.subheader("✅ What's Working (and Stable)")
+st.caption("The Golden Rule: a signal only counts if it holds direction in BOTH halves of the data "
+           "(split at the median date of the bets below). Every validated edge from the signal review, "
+           "tested live against your CURRENT filtered settled bets. Stable + positive first.")
+
+# Sub-50 smash whitelist pockets — segments that hold up even without the smash>=50 gate.
+WHITELIST_POCKETS = [
+    ('WNBA', 'Assists', 'Under'), ('WNBA', 'Threes', 'Over'),
+    ('MLB', 'Pitcher Hits Allowed', 'Over'), ('MLB', 'Pitcher Walks Allowed', 'Over'),
+    ('MLB', 'Pitcher Earned Runs', 'Under'), ('MLB', 'Hits+Runs+RBIs', 'Under'),
+]
+
+def _validated_edge_subsets(d):
+    """Returns [(label, sub_df), ...] for every validated edge whose required
+    columns are present in d. Silently skips edges with missing columns."""
+    edges = []
+    def add(label, cols, mask_fn):
+        if d is None or d.empty or not all(c in d.columns for c in cols):
+            return
+        try:
+            m = mask_fn(d)
+            m = m.fillna(False) if hasattr(m, 'fillna') else m
+            edges.append((label, d[m]))
+        except Exception:
+            pass
+
+    add("Smash ≥50 & Under", ['smash_score', 'bet_side'],
+        lambda x: (x['smash_score'] >= 50) & (x['bet_side'] == 'Under'))
+    add("Smash ≥50 & Sharp Gap >5%", ['smash_score', 'sharp_gap_pct'],
+        lambda x: (x['smash_score'] >= 50) & (x['sharp_gap_pct'] > 5))
+    add("Smash ≥50 & CatBoost ≥49 & Under", ['smash_score', 'catboost_score', 'bet_side'],
+        lambda x: (x['smash_score'] >= 50) & (x['catboost_score'] >= 49) & (x['bet_side'] == 'Under'))
+    add("Polymarket Sole-Sharp · Totals Over", ['sharp_book', 'bet_type', 'bet_side'],
+        lambda x: (x['sharp_book'].astype(str).str.strip() == 'Polymarket') &
+                  (x['bet_type'] == 'Total') & (x['bet_side'] == 'Over'))
+    add("MLB Total Overs", ['league', 'bet_type', 'bet_side'],
+        lambda x: (x['league'] == 'MLB') & (x['bet_type'] == 'Total') & (x['bet_side'] == 'Over'))
+    add("TWROI > 0", ['twroi'], lambda x: x['twroi'] > 0)
+
+    for lg, pc, side in WHITELIST_POCKETS:
+        add(f"Sub-50 Whitelist: {lg} / {pc} / {side}", ['league', 'prop_cat', 'bet_side'],
+            lambda x, lg=lg, pc=pc, side=side: (x['league'] == lg) & (x['prop_cat'] == pc) & (x['bet_side'] == side))
+    return edges
+
+_ww_rows = []
+for _label, _sub in _validated_edge_subsets(closed):
+    _s = stability(_sub)
+    _ww_rows.append({'Edge': _label, 'N': _s['n'], 'roi': _s['overall_roi'],
+                      'h1_roi': _s['h1_roi'], 'H1 N': _s['h1_n'],
+                      'h2_roi': _s['h2_roi'], 'H2 N': _s['h2_n'],
+                      'verdict': _s['verdict']})
+
+if not _ww_rows:
+    st.info("No validated-edge columns available in the current data/filter (need smash_score, "
+            "catboost_score, sharp_book, league/prop_cat/bet_side, or twroi).")
+else:
+    _ww = pd.DataFrame(_ww_rows)
+    _rank = {'STABLE': 0, 'thin': 1, 'UNSTABLE': 2}
+    _ww['_rank'] = _ww['verdict'].map(_rank)
+    _ww = _ww.sort_values(by=['_rank', 'roi'], ascending=[True, False]).drop(columns='_rank')
+    _ww_disp = _ww.copy()
+    _ww_disp['ROI']    = _ww_disp['roi'].map('{:+.1f}%'.format)
+    _ww_disp['H1 ROI'] = _ww_disp['h1_roi'].map('{:+.1f}%'.format)
+    _ww_disp['H2 ROI'] = _ww_disp['h2_roi'].map('{:+.1f}%'.format)
+    _ww_disp['Stability'] = _ww_disp['verdict'].apply(verdict_badge)
+    st.dataframe(_ww_disp[['Edge', 'N', 'ROI', 'H1 ROI', 'H1 N', 'H2 ROI', 'H2 N', 'Stability']],
+                 use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
+
+# ─────────────────────────────────────────────────────────────
+# 🎯 TODAY'S BOARD — OPEN BETS BY VALIDATED EDGE
+# ─────────────────────────────────────────────────────────────
+st.subheader("🎯 Today's Board — Last 24h Alerts by Validated Edge")
+st.caption("Alerts from the last 24 hours, tagged with which validated edges (from above) each one "
+           "matches. More matches = higher conviction. Bets grade fast (there is no persistent 'open' "
+           "state), so this is a daily slate review — the real-time, placeable version is your Gambly "
+           "DMs. Uses the last 24h of alerted bets in the loaded window, independent of the sidebar filters.")
+
+_ts_all  = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+_cutoff  = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=24)
+if 'alerted' in df.columns:
+    _recent_mask = (_ts_all >= _cutoff) & (df['alerted'] == True)
+else:
+    _recent_mask = (_ts_all >= _cutoff)
+_open_bets = df[_recent_mask].copy().reset_index(drop=True)
+if _open_bets.empty:
+    st.info("No alerts in the last 24 hours — is the tracker running?")
+else:
+    def _match_tags(row):
+        tags = []
+        smash = row.get('smash_score')
+        cat   = row.get('catboost_score')
+        side  = row.get('bet_side')
+        if pd.notna(smash) and smash >= 50 and side == 'Under':
+            tags.append('Smash≥50&Under')
+        if pd.notna(cat) and cat >= 49 and side == 'Under':
+            tags.append('CatBoost≥49&Under')
+        sb = str(row.get('sharp_book', '')).strip()
+        if sb == 'Polymarket' and row.get('bet_type') == 'Total' and side == 'Over':
+            tags.append('Polymarket Total/Over')
+        for lg, pc, sd in WHITELIST_POCKETS:
+            if row.get('league') == lg and row.get('prop_cat') == pc and side == sd:
+                tags.append(f'Whitelist:{lg}/{pc}/{sd}')
+        tw = row.get('twroi')
+        if pd.notna(tw) and tw > 0:
+            tags.append('TWROI>0')
+        return tags
+
+    try:
+        _open_bets['_tags']   = _open_bets.apply(_match_tags, axis=1)
+        _open_bets['_n_tags'] = _open_bets['_tags'].apply(len)
+        _smash_col = _open_bets['smash_score'] if 'smash_score' in _open_bets.columns else pd.Series(np.nan, index=_open_bets.index)
+        _cat_col   = _open_bets['catboost_score'] if 'catboost_score' in _open_bets.columns else pd.Series(np.nan, index=_open_bets.index)
+        _matchup_col = _open_bets['matchup'] if 'matchup' in _open_bets.columns else pd.Series('', index=_open_bets.index)
+
+        _board = pd.DataFrame({
+            'League': _open_bets.get('league', ''),
+            'Matchup / Selection': [
+                f"{m} — {s}" if pd.notna(m) and str(m).strip() else str(s)
+                for m, s in zip(_matchup_col, _open_bets.get('play_selection', ''))
+            ],
+            'Book':   _open_bets.get('play_book', ''),
+            'Odds':   _open_bets.get('play_odds', ''),
+            'Status': _open_bets.get('status', ''),
+            'Smash':  _smash_col,
+            'CatBoost': _cat_col,
+            'Matched Edges': _open_bets['_tags'].apply(lambda t: ', '.join(t) if t else '—'),
+            '_n': _open_bets['_n_tags'].values,
+        })
+        _board = _board.sort_values(by=['_n', 'Smash'], ascending=[False, False], na_position='last').drop(columns='_n')
+        st.dataframe(_board, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.warning(f"Couldn't build the open-bets board ({e}). Showing raw open bets instead.")
+        _fallback_cols = [c for c in ['timestamp', 'league', 'matchup', 'play_selection', 'play_book',
+                                       'play_odds', 'status', 'smash_score', 'catboost_score'] if c in _open_bets.columns]
+        st.dataframe(_open_bets[_fallback_cols], use_container_width=True, hide_index=True)
 
 st.markdown("---")
 
@@ -882,23 +1157,33 @@ with tab_analysis:
         col_a,col_b = st.columns(2)
         with col_a:
             st.subheader("By League")
-            st.plotly_chart(bar(calc_roi(closed,'league',10),'league',metric,text_fmt=tf),use_container_width=True, key="chart_league")
+            league_stats = with_stability(calc_roi(closed,'league',10), closed, 'league')
+            st.plotly_chart(bar(league_stats,'league',metric,text_fmt=tf),use_container_width=True, key="chart_league")
+            render_stability_table(league_stats, 'league', 'League')
         with col_b:
             st.subheader("By Bet Type")
-            st.plotly_chart(bar(calc_roi(closed,'bet_type',5),'bet_type',metric,text_fmt=tf),use_container_width=True, key="chart_bet_type")
-        
+            bettype_stats = with_stability(calc_roi(closed,'bet_type',5), closed, 'bet_type')
+            st.plotly_chart(bar(bettype_stats,'bet_type',metric,text_fmt=tf),use_container_width=True, key="chart_bet_type")
+            render_stability_table(bettype_stats, 'bet_type', 'Bet Type')
+
         col_c,col_d = st.columns(2)
         with col_c:
             st.subheader("By Play Book")
-            st.plotly_chart(bar(calc_roi(closed,'play_book',10),'play_book',metric,text_fmt=tf),use_container_width=True, key="chart_playbook")
+            playbook_stats = with_stability(calc_roi(closed,'play_book',10), closed, 'play_book')
+            st.plotly_chart(bar(playbook_stats,'play_book',metric,text_fmt=tf),use_container_width=True, key="chart_playbook")
+            render_stability_table(playbook_stats, 'play_book', 'Play Book')
         with col_d:
             st.subheader("By Sharp Book Signal")
-            st.plotly_chart(bar(calc_roi(closed,'primary_sharp',10),'primary_sharp',metric,text_fmt=tf),use_container_width=True, key="chart_sharp")
-        
+            sharp_stats = with_stability(calc_roi(closed,'primary_sharp',10), closed, 'primary_sharp')
+            st.plotly_chart(bar(sharp_stats,'primary_sharp',metric,text_fmt=tf),use_container_width=True, key="chart_sharp")
+            render_stability_table(sharp_stats, 'primary_sharp', 'Sharp Book Signal')
+
         st.subheader("By Consensus Count")
-        cs_stats = calc_roi(closed,'consensus',5).sort_values('consensus')
-        cs_stats['consensus'] = cs_stats['consensus'].astype(str)+' books'
-        st.plotly_chart(bar(cs_stats,'consensus',metric,text_fmt=tf,h=240),use_container_width=True, key="chart_consensus")
+        cs_stats = with_stability(calc_roi(closed,'consensus',5).sort_values('consensus'), closed, 'consensus')
+        cs_chart = cs_stats.copy()
+        cs_chart['consensus'] = cs_chart['consensus'].astype(str)+' books'
+        st.plotly_chart(bar(cs_chart,'consensus',metric,text_fmt=tf,h=240),use_container_width=True, key="chart_consensus")
+        render_stability_table(cs_stats, 'consensus', 'Consensus (# Books)')
 
         st.subheader("By Time of Day (Hour)")
         closed_hr = closed.copy()
@@ -983,6 +1268,18 @@ with tab_props:
         fig_x.update_layout(**LAYOUT,height=350,xaxis_tickangle=-30)
         st.plotly_chart(fig_x,use_container_width=True)
 
+        cross_stab = with_stability_multi(cross, props_closed, ['prop_cat','bet_side'])
+        if not cross_stab.empty:
+            _cd = cross_stab.copy()
+            _cd['ROI']    = _cd['roi'].map('{:+.1f}%'.format)
+            _cd['H1 ROI'] = _cd['h1_roi'].map('{:+.1f}%'.format)
+            _cd['H2 ROI'] = _cd['h2_roi'].map('{:+.1f}%'.format)
+            _cd['Stability'] = _cd['stability_badge']
+            st.dataframe(_cd.rename(columns={'prop_cat':'Category','bet_side':'Side','n':'Bets',
+                                              'h1_n':'H1 N','h2_n':'H2 N'})
+                         [['Category','Side','Bets','ROI','H1 ROI','H1 N','H2 ROI','H2 N','Stability']],
+                         use_container_width=True, hide_index=True)
+
         st.subheader("NBA Prop Unders — Category Detail")
         nba_u = props_closed[(props_closed['league']=='NBA')&(props_closed['bet_side']=='Under')]
         if not nba_u.empty:
@@ -1008,13 +1305,20 @@ with tab_odds:
         odds_s['roi']=(odds_s['profit']/(odds_s['n']*UNIT_SIZE))*100
         odds_s['odds_bucket']=pd.Categorical(odds_s['odds_bucket'],categories=ODDS_BUCKET_ORDER,ordered=True)
         odds_s=odds_s.sort_values('odds_bucket')
+        odds_s = with_stability(odds_s, closed, 'odds_bucket')
         metric='roi' if metric_mode=="ROI (%)" else 'profit'
         st.plotly_chart(bar(odds_s,'odds_bucket',metric,
             text_fmt='roi' if metric=='roi' else 'profit',h=320),use_container_width=True)
         disp=odds_s.copy()
         disp['roi']=disp['roi'].map('{:+.1f}%'.format)
         disp['profit']=disp['profit'].map('${:,.2f}'.format)
-        st.dataframe(disp.rename(columns={'odds_bucket':'Odds Range','n':'Bets','roi':'ROI','profit':'Profit'}),
+        disp['H1 ROI']=odds_s['h1_roi'].map('{:+.1f}%'.format)
+        disp['H1 N']=odds_s['h1_n']
+        disp['H2 ROI']=odds_s['h2_roi'].map('{:+.1f}%'.format)
+        disp['H2 N']=odds_s['h2_n']
+        disp['Stability']=odds_s['verdict'].apply(verdict_badge)
+        st.dataframe(disp.rename(columns={'odds_bucket':'Odds Range','n':'Bets','roi':'ROI','profit':'Profit'})
+                     [['Odds Range','Bets','ROI','Profit','H1 ROI','H1 N','H2 ROI','H2 N','Stability']],
                      use_container_width=True,hide_index=True)
 
 
@@ -1084,12 +1388,17 @@ with tab_leaderboard:
         lb['wr']=lb['wins']/lb['n'].clip(lower=1)*100
         lb=lb[lb['n']>=min_bets].sort_values('roi' if sort_by=='ROI' else 'profit',ascending=False)
         lb2.metric("Categories shown",f"{len(lb)}")
+        lb = with_stability(lb, closed, 'combo')
         disp=lb.copy()
         disp['roi']=disp['roi'].map('{:+.1f}%'.format)
         disp['profit']=disp['profit'].map('${:,.0f}'.format)
         disp['wr']=disp['wr'].map('{:.1f}%'.format)
-        st.dataframe(disp[['combo','n','roi','profit','wr']].rename(
-            columns={'combo':'Category','n':'Bets','roi':'ROI','profit':'Profit','wr':'Win Rate'}),
+        disp['H1 ROI']=lb['h1_roi'].map('{:+.1f}%'.format)
+        disp['H2 ROI']=lb['h2_roi'].map('{:+.1f}%'.format)
+        disp['Stability']=lb['stability_badge']
+        st.dataframe(disp[['combo','n','roi','profit','wr','H1 ROI','h1_n','H2 ROI','h2_n','Stability']].rename(
+            columns={'combo':'Category','n':'Bets','roi':'ROI','profit':'Profit','wr':'Win Rate',
+                     'h1_n':'H1 N','h2_n':'H2 N'}),
             use_container_width=True,height=600,hide_index=True)
 
 
@@ -1175,8 +1484,11 @@ with tab_sharps:
 # 🎯 EDGE SCORES TAB
 # ─────────────────────────────────────────────────────────────
 with tab_edge:
-    st.subheader("🎯 Edge Score Analysis")
-    st.caption("Validating whether higher scores actually predict better outcomes on your real bets.")
+    st.subheader("🎯 Edge Score Analysis (RETIRED — kept for reference; Smash is the live gate)")
+    st.caption("Validating whether higher scores actually predict better outcomes on your real bets. "
+               "**Smash Score (≥50) is the primary live decision gate**; CatBoost is the supplementary "
+               "model signal. **'My Edge Score' (`edge_score`) is retired as a decision driver** — its "
+               "panel below is kept for historical reference only, not as validation.")
 
     if not HAS_MY_SCORE and not HAS_GEM_SCORE and not HAS_SMASH_SCORE and not HAS_CAT_SCORE:
         st.info(
@@ -1213,9 +1525,11 @@ with tab_edge:
                                 annotation_position="bottom right")
                 fig_v.update_layout(**LAYOUT, title="My Edge Score → ROI", height=320, yaxis_title="ROI (%)")
                 st.plotly_chart(fig_v, use_container_width=True)
+                st.caption("🕰️ Legacy score — retired as a decision driver, shown for reference only.")
                 if len(bkt) >= 2:
                     mono = all(bkt['roi'].iloc[i] <= bkt['roi'].iloc[i+1] for i in range(len(bkt)-1))
                     st.caption(f"Monotonically increasing: {'✅ Yes' if mono else '⚠️ Not yet — needs more forward data'}")
+                render_bucket_stability(bkt)
 
     with val_c2:
         if HAS_GEM_SCORE:
@@ -1233,6 +1547,7 @@ with tab_edge:
                                  annotation_position="bottom right")
                 fig_gv.update_layout(**LAYOUT, title="Gem Edge Score → ROI", height=320, yaxis_title="ROI (%)")
                 st.plotly_chart(fig_gv, use_container_width=True)
+                render_bucket_stability(gbkt)
 
     with val_c3:
         if HAS_SMASH_SCORE:
@@ -1250,10 +1565,12 @@ with tab_edge:
                                  annotation_position="bottom right")
                 fig_sv.update_layout(**LAYOUT, title="Smash Score → ROI", height=320, yaxis_title="ROI (%)")
                 st.plotly_chart(fig_sv, use_container_width=True)
+                render_bucket_stability(sbkt)
 
     with val_c4:
         if HAS_CAT_SCORE:
-            cat_settled = settled_e[settled_e['catboost_score'] > 0]
+            cat_settled = settled_e[(settled_e['catboost_score'] > 0) &
+                                     (settled_e['timestamp'] >= CATBOOST_LIVE)]
             cbkt = score_bucket_roi(cat_settled, 'catboost_score', CAT_SCORE_BUCKETS, min_n=2)
             if not cbkt.empty:
                 fig_cv = go.Figure(go.Bar(
@@ -1268,6 +1585,33 @@ with tab_edge:
                                  annotation_position="bottom right")
                 fig_cv.update_layout(**LAYOUT, title="🌲 CatBoost → ROI", height=320, yaxis_title="ROI (%)")
                 st.plotly_chart(fig_cv, use_container_width=True)
+                st.caption(f"🔒 LIVE-SCORED ONLY — bets before {CATBOOST_LIVE.date()} excluded "
+                           "(pre-go-live scores are backfilled and lookahead-contaminated).")
+                render_bucket_stability(cbkt)
+            else:
+                st.info(f"No live-scored CatBoost bets yet (timestamp ≥ {CATBOOST_LIVE.date()}) "
+                        "matching current filters.")
+
+    # Sport model — same leakage rule, but only renders if sport_score is actually
+    # loaded into the dataframe (it isn't in the current db_utils.load_bets query,
+    # so this is a forward-compatible no-op until that column is wired up).
+    HAS_SPORT_SCORE = 'sport_score' in df_f.columns and df_f['sport_score'].notna().sum() > 0
+    if HAS_SPORT_SCORE:
+        st.markdown("#### 🏈 Sport Model → ROI (live-scored only)")
+        sport_settled = settled_e.dropna(subset=['sport_score'])
+        sport_settled = sport_settled[sport_settled['timestamp'] >= SPORT_MODEL_LIVE]
+        spbkt = score_bucket_roi(sport_settled, 'sport_score', CAT_SCORE_BUCKETS, min_n=2)
+        if not spbkt.empty:
+            fig_sp = go.Figure(go.Bar(
+                x=spbkt['bucket'], y=spbkt['roi'], marker_color=spbkt['color'],
+                text=[f"{r:+.1f}%<br>N={n:,}" for r,n in zip(spbkt['roi'],spbkt['n'])],
+                textposition='outside', textfont=dict(size=11)))
+            fig_sp.add_hline(y=0, line_color='#30363d', line_width=2)
+            fig_sp.update_layout(**LAYOUT, title="Sport Model → ROI", height=320, yaxis_title="ROI (%)")
+            st.plotly_chart(fig_sp, use_container_width=True)
+            st.caption(f"🔒 LIVE-SCORED ONLY — bets before {SPORT_MODEL_LIVE.date()} excluded "
+                       "(pre-go-live scores are backfilled and lookahead-contaminated).")
+            render_bucket_stability(spbkt)
 
     st.markdown("---")
 
