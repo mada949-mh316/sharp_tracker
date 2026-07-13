@@ -79,7 +79,7 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def fetch_parlays() -> pd.DataFrame:
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
+    db_url = os.environ.get('DATABASE_URL', '')
     conn = psycopg2.connect(db_url, sslmode='disable')
     df = pd.read_sql("""
         SELECT id, created_at, n_legs, book,
@@ -99,7 +99,7 @@ def fetch_parlays() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
+    db_url = os.environ.get('DATABASE_URL', '')
     conn = psycopg2.connect(db_url, sslmode='disable')
     params: list = [DFS_BOOKS]
     time_clause = ""
@@ -155,7 +155,7 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
 def fetch_dfs_picks() -> pd.DataFrame:
     """Load DFS combo slips from the dfs_picks table."""
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', 'postgresql://tracker:Sh%40dam949@104.131.111.111:5432/smartmoney')
+    db_url = os.environ.get('DATABASE_URL', '')
     conn = psycopg2.connect(db_url, sslmode='disable')
     try:
         with conn.cursor() as cur:
