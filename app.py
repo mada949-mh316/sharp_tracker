@@ -838,6 +838,27 @@ WHITELIST_POCKETS = [
     ('MLB', 'Pitcher Earned Runs', 'Under'), ('MLB', 'Hits+Runs+RBIs', 'Under'),
 ]
 
+def match_validated_edges(row):
+    """Return the list of validated-edge labels a bet matches (shared by Today's
+    Board and Yesterday's scorecard so both use identical definitions)."""
+    tags = []
+    smash = row.get('smash_score')
+    cat   = row.get('catboost_score')
+    side  = row.get('bet_side')
+    if pd.notna(smash) and smash >= 50 and side == 'Under':
+        tags.append('Smash≥50&Under')
+    if pd.notna(cat) and cat >= 49 and side == 'Under':
+        tags.append('CatBoost≥49&Under')
+    if str(row.get('sharp_book', '')).strip() == 'Polymarket' and row.get('bet_type') == 'Total' and side == 'Over':
+        tags.append('Polymarket Total/Over')
+    for lg, pc, sd in WHITELIST_POCKETS:
+        if row.get('league') == lg and row.get('prop_cat') == pc and side == sd:
+            tags.append(f'Whitelist:{lg}/{pc}/{sd}')
+    tw = row.get('twroi')
+    if pd.notna(tw) and tw > 0:
+        tags.append('TWROI>0')
+    return tags
+
 def _validated_edge_subsets(d):
     """Returns [(label, sub_df), ...] for every validated edge whose required
     columns are present in d. Silently skips edges with missing columns."""
@@ -916,28 +937,8 @@ _open_bets = df[_recent_mask].copy().reset_index(drop=True)
 if _open_bets.empty:
     st.info("No alerts in the last 24 hours — is the tracker running?")
 else:
-    def _match_tags(row):
-        tags = []
-        smash = row.get('smash_score')
-        cat   = row.get('catboost_score')
-        side  = row.get('bet_side')
-        if pd.notna(smash) and smash >= 50 and side == 'Under':
-            tags.append('Smash≥50&Under')
-        if pd.notna(cat) and cat >= 49 and side == 'Under':
-            tags.append('CatBoost≥49&Under')
-        sb = str(row.get('sharp_book', '')).strip()
-        if sb == 'Polymarket' and row.get('bet_type') == 'Total' and side == 'Over':
-            tags.append('Polymarket Total/Over')
-        for lg, pc, sd in WHITELIST_POCKETS:
-            if row.get('league') == lg and row.get('prop_cat') == pc and side == sd:
-                tags.append(f'Whitelist:{lg}/{pc}/{sd}')
-        tw = row.get('twroi')
-        if pd.notna(tw) and tw > 0:
-            tags.append('TWROI>0')
-        return tags
-
     try:
-        _open_bets['_tags']   = _open_bets.apply(_match_tags, axis=1)
+        _open_bets['_tags']   = _open_bets.apply(match_validated_edges, axis=1)
         _open_bets['_n_tags'] = _open_bets['_tags'].apply(len)
         _smash_col = _open_bets['smash_score'] if 'smash_score' in _open_bets.columns else pd.Series(np.nan, index=_open_bets.index)
         _cat_col   = _open_bets['catboost_score'] if 'catboost_score' in _open_bets.columns else pd.Series(np.nan, index=_open_bets.index)
@@ -964,6 +965,74 @@ else:
         _fallback_cols = [c for c in ['timestamp', 'league', 'matchup', 'play_selection', 'play_book',
                                        'play_odds', 'status', 'smash_score', 'catboost_score'] if c in _open_bets.columns]
         st.dataframe(_open_bets[_fallback_cols], use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────────────────────
+# YESTERDAY'S BETS — SETTLED SCORECARD
+# ─────────────────────────────────────────────────────────────
+st.subheader("📅 Yesterday's Bets — Results")
+try:
+    _et_dates   = pd.to_datetime(df['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York')
+    _yest_date  = (pd.Timestamp.now(tz='America/New_York') - pd.Timedelta(days=1)).date()
+    _y_alerted  = (df['alerted'] == True) if 'alerted' in df.columns else pd.Series(True, index=df.index)
+    _yday       = df[(_et_dates.dt.date == _yest_date) & _y_alerted].copy()
+    st.caption(f"Alerted bets from {_yest_date:%A, %b %d %Y} (ET). Units = profit ÷ {UNIT_SIZE:g} stake.")
+
+    _yset = _yday[_yday['status'].isin(['Won', 'Lost'])].copy()
+    if _yset.empty:
+        _pend = int((_yday['status'].isin(['Open', 'Pending'])).sum()) if len(_yday) else 0
+        st.info(f"No settled alerted bets from yesterday ({len(_yday)} alerted total"
+                + (f", {_pend} still ungraded" if _pend else "") + ").")
+    else:
+        _p     = pd.to_numeric(_yset['profit'], errors='coerce').fillna(0.0)
+        _wins  = int((_yset['status'] == 'Won').sum())
+        _loss  = int((_yset['status'] == 'Lost').sum())
+        _units = _p.sum() / UNIT_SIZE
+        _roi   = (_p.sum() / (len(_yset) * UNIT_SIZE)) * 100
+        _wr    = (_wins / len(_yset) * 100) if len(_yset) else 0.0
+        y1, y2, y3, y4 = st.columns(4)
+        y1.metric("Record", f"{_wins}-{_loss}", f"{_wr:.0f}% win")
+        y2.metric("Settled Bets", f"{len(_yset):,}")
+        y3.metric("Units Won", f"{_units:+.2f}u")
+        y4.metric("ROI", f"{_roi:+.2f}%")
+
+        _yset['_u']    = _p / UNIT_SIZE
+        _yset['_edges'] = _yset.apply(match_validated_edges, axis=1)
+        _ytbl = pd.DataFrame({
+            'League':    _yset.get('league', ''),
+            'Selection': _yset.get('play_selection', ''),
+            'Book':      _yset.get('play_book', ''),
+            'Odds':      _yset.get('play_odds', ''),
+            'Result':    _yset['status'].map({'Won': '✅ Won', 'Lost': '❌ Lost'}).fillna(_yset['status']),
+            'Units':     _yset['_u'].round(2),
+            'Smash':     _yset['smash_score'] if 'smash_score' in _yset.columns else np.nan,
+            'Alerted Edge': _yset['_edges'].apply(lambda t: ', '.join(t) if t else '—'),
+        }).sort_values('Units', ascending=False)
+        st.dataframe(_ytbl, use_container_width=True, hide_index=True)
+
+        # ROI broken out BY validated edge (which edges actually cashed yesterday)
+        _edge_rows = []
+        for _lbl in ['Smash≥50&Under', 'CatBoost≥49&Under', 'Polymarket Total/Over', 'TWROI>0'] \
+                    + [f'Whitelist:{lg}/{pc}/{sd}' for lg, pc, sd in WHITELIST_POCKETS]:
+            _m = _yset['_edges'].apply(lambda t: _lbl in t)
+            if _m.sum() == 0:
+                continue
+            _sub = _yset[_m]
+            _sp  = pd.to_numeric(_sub['profit'], errors='coerce').fillna(0.0)
+            _edge_rows.append({
+                'Validated Edge': _lbl,
+                'Bets':   int(len(_sub)),
+                'Record': f"{int((_sub['status']=='Won').sum())}-{int((_sub['status']=='Lost').sum())}",
+                'Units':  round(_sp.sum() / UNIT_SIZE, 2),
+                'ROI %':  round(_sp.sum() / (len(_sub) * UNIT_SIZE) * 100, 1),
+            })
+        if _edge_rows:
+            st.caption("Yesterday's results broken out by validated edge (bets can match more than one):")
+            st.dataframe(pd.DataFrame(_edge_rows).sort_values('Units', ascending=False),
+                         use_container_width=True, hide_index=True)
+except Exception as _e:
+    st.warning(f"Couldn't build yesterday's scorecard ({_e}).")
 
 st.markdown("---")
 
