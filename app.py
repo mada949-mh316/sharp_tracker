@@ -70,6 +70,21 @@ def _get_db_url():
             url = ''
     return url
 
+@st.cache_data(ttl=120)
+def fetch_paper_bets() -> pd.DataFrame:
+    """Load the paper_bets table (unlimited-books ≥+2% gate paper trade)."""
+    import psycopg2
+    url = _get_db_url()
+    if not url:
+        return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(url, sslmode='require')
+        df = pd.read_sql("SELECT * FROM paper_bets ORDER BY logged_at DESC", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=300)
 def fetch_from_db(days_back: int) -> pd.DataFrame:
     raw = load_bets(days_back=days_back if days_back > 0 else None)
@@ -1045,6 +1060,74 @@ try:
                          use_container_width=True, hide_index=True)
 except Exception as _e:
     st.warning(f"Couldn't build yesterday's scorecard ({_e}).")
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────────────────────
+# PAPER TRADE — unlimited-books ≥+2% expected-ROI gate
+# ─────────────────────────────────────────────────────────────
+st.subheader("🎲 Paper Trade — Unlimited Books (≥ +2% expected-ROI gate)")
+st.caption("Every bet you 🔍'd that cleared ≥+2% expected ROI (win-rate based) on Novig / ProphetX / "
+           "Kalshi, logged at that price. The question: is the +2% takeability gate actually profitable? "
+           "Watch **Actual ROI vs. Avg Expected** — if realized meets or beats expected, the gate works.")
+try:
+    _pb = fetch_paper_bets()
+    if _pb.empty:
+        st.info("No paper bets logged yet. Tap 🔍 on your bet DMs to log the ones that clear +2%.")
+    else:
+        _pb['pnl']  = pd.to_numeric(_pb.get('pnl'), errors='coerce')
+        _pb['eroi'] = pd.to_numeric(_pb.get('expected_roi'), errors='coerce')
+        _settled = _pb[_pb['status'].isin(['won', 'lost'])].copy()
+        _open_n  = int((_pb['status'] == 'open').sum())
+        if _settled.empty:
+            st.info(f"{_open_n} paper bet(s) logged, none settled yet — check back after they grade.")
+        else:
+            _w = int((_settled['status'] == 'won').sum())
+            _l = int((_settled['status'] == 'lost').sum())
+            _pnl = _settled['pnl'].fillna(0).sum()
+            _roi = _pnl / len(_settled) * 100
+            _exp = _settled['eroi'].mean() * 100
+            p1, p2, p3, p4, p5 = st.columns(5)
+            p1.metric("Record", f"{_w}-{_l}", f"{_w/len(_settled)*100:.0f}% win")
+            p2.metric("Settled", f"{len(_settled):,}")
+            p3.metric("Units P&L", f"{_pnl:+.2f}u")
+            p4.metric("Actual ROI", f"{_roi:+.2f}%")
+            p5.metric("Avg Expected", f"{_exp:+.2f}%")
+            _delta = _roi - _exp
+            if _roi > 0 and _roi >= _exp - 2:
+                st.success(f"✅ The +2% gate is delivering — realized {_roi:+.1f}% vs expected {_exp:+.1f}% "
+                           f"({_delta:+.1f} pts). Taking these on your books is paying off so far.")
+            elif _roi > 0:
+                st.warning(f"⚠️ Profitable ({_roi:+.1f}%) but under the {_exp:+.1f}% expected "
+                           f"({_delta:+.1f} pts) — watch it; the win-rate model may be optimistic.")
+            else:
+                st.error(f"🔴 Realized {_roi:+.1f}% vs expected {_exp:+.1f}% — the gate is NOT profitable "
+                         f"on this sample. Don't scale to real money yet.")
+            st.caption(f"Sample so far: {len(_settled):,} settled, {_open_n} still open. "
+                       "(Needs a few hundred settled to trust — treat small samples as noise.)")
+
+            st.markdown("**By book:**")
+            _rows = []
+            for _bk, _g in _settled.groupby('book'):
+                _gp = _g['pnl'].fillna(0)
+                _rows.append({
+                    'Book': _bk,
+                    'Bets': len(_g),
+                    'Record': f"{int((_g['status']=='won').sum())}-{int((_g['status']=='lost').sum())}",
+                    'Units': round(_gp.sum(), 2),
+                    'Actual ROI %': round(_gp.sum() / len(_g) * 100, 1),
+                    'Avg Exp %': round(_g['eroi'].mean() * 100, 1),
+                })
+            st.dataframe(pd.DataFrame(_rows).sort_values('Bets', ascending=False),
+                         use_container_width=True, hide_index=True)
+
+            with st.expander("Recent paper bets"):
+                _show = _pb.head(50)[['logged_at', 'book', 'league', 'selection', 'side',
+                                      'price_amer', 'price_prob', 'expected_roi', 'status', 'pnl']].copy()
+                _show['expected_roi'] = (_show['expected_roi'] * 100).round(1)
+                st.dataframe(_show, use_container_width=True, hide_index=True)
+except Exception as _e:
+    st.warning(f"Couldn't load the paper-trade panel ({_e}).")
 
 st.markdown("---")
 
