@@ -60,15 +60,20 @@ section[data-testid="stSidebar"] * { color: #e6edf3 !important; }
 
 def _get_db_url():
     """DB URL from env var (local/droplet) or Streamlit secrets (Cloud).
-    No hardcoded credentials — set DATABASE_URL in the environment or in
-    the app's Streamlit secrets."""
+    Checks BOTH secret shapes so it matches db_utils: top-level DATABASE_URL and
+    the nested [database] url. No hardcoded credentials."""
     url = os.environ.get('DATABASE_URL', '')
-    if not url:
+    if url:
+        return url
+    for getter in (lambda: st.secrets['DATABASE_URL'],
+                   lambda: st.secrets['database']['url']):
         try:
-            url = st.secrets['DATABASE_URL']
+            v = getter()
+            if v:
+                return v
         except Exception:
-            url = ''
-    return url
+            pass
+    return ''
 
 @st.cache_data(ttl=120)
 def fetch_paper_bets() -> pd.DataFrame:
@@ -107,7 +112,7 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
 def fetch_parlays() -> pd.DataFrame:
     import psycopg2
     db_url = _get_db_url()
-    conn = psycopg2.connect(db_url, sslmode='disable')
+    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=10)
     df = pd.read_sql("""
         SELECT id, created_at, n_legs, book,
                leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
@@ -127,7 +132,7 @@ def fetch_parlays() -> pd.DataFrame:
 def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
     import psycopg2
     db_url = _get_db_url()
-    conn = psycopg2.connect(db_url, sslmode='disable')
+    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=10)
     params: list = [DFS_BOOKS]
     time_clause = ""
     if days_back > 0:
@@ -183,7 +188,7 @@ def fetch_dfs_picks() -> pd.DataFrame:
     """Load DFS combo slips from the dfs_picks table."""
     import psycopg2
     db_url = _get_db_url()
-    conn = psycopg2.connect(db_url, sslmode='disable')
+    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=10)
     try:
         with conn.cursor() as cur:
             cur.execute("""
