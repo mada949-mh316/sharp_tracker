@@ -59,9 +59,16 @@ section[data-testid="stSidebar"] * { color: #e6edf3 !important; }
 # ─────────────────────────────────────────────────────────────
 
 def _get_db_url():
-    """DB URL from env var (local/droplet) or Streamlit secrets (Cloud).
-    Checks BOTH secret shapes so it matches db_utils: top-level DATABASE_URL and
-    the nested [database] url. No hardcoded credentials."""
+    """DB URL for the direct-connection tabs (Parlays/DFS/Paper). Delegates to the
+    SAME resolver db_utils uses for the main data — so wherever the dashboard's main
+    data loads, these do too. Falls back to env / both secret shapes."""
+    try:
+        from db_utils import _get_database_url as _dbu_url
+        v = _dbu_url()
+        if v:
+            return v
+    except Exception:
+        pass
     url = os.environ.get('DATABASE_URL', '')
     if url:
         return url
