@@ -85,15 +85,10 @@ def _get_db_url():
 @st.cache_data(ttl=120)
 def fetch_paper_bets() -> pd.DataFrame:
     """Load the paper_bets table (unlimited-books ≥+2% gate paper trade)."""
-    import psycopg2
-    url = _get_db_url()
-    if not url:
-        return pd.DataFrame()
     try:
-        conn = psycopg2.connect(url, sslmode='require')
-        df = pd.read_sql("SELECT * FROM paper_bets ORDER BY logged_at DESC", conn)
-        conn.close()
-        return df
+        from db_utils import get_conn
+        with get_conn() as conn:
+            return pd.read_sql("SELECT * FROM paper_bets ORDER BY logged_at DESC", conn)
     except Exception:
         return pd.DataFrame()
 
@@ -117,19 +112,17 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def fetch_parlays() -> pd.DataFrame:
-    import psycopg2
-    db_url = _get_db_url()
-    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=10)
-    df = pd.read_sql("""
-        SELECT id, created_at, n_legs, book,
-               leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
-               leg2_sel, leg2_book, leg2_odds, leg2_market, leg2_league, leg2_tier, leg2_edge, leg2_twroi,
-               leg3_sel, leg3_book, leg3_odds, leg3_market, leg3_league, leg3_tier, leg3_edge, leg3_twroi,
-               parlay_odds, ev_pct, min_odds, status, profit, graded_at
-        FROM parlays
-        ORDER BY created_at DESC
-    """, conn)
-    conn.close()
+    from db_utils import get_conn
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT id, created_at, n_legs, book,
+                   leg1_sel, leg1_book, leg1_odds, leg1_market, leg1_league, leg1_tier, leg1_edge, leg1_twroi,
+                   leg2_sel, leg2_book, leg2_odds, leg2_market, leg2_league, leg2_tier, leg2_edge, leg2_twroi,
+                   leg3_sel, leg3_book, leg3_odds, leg3_market, leg3_league, leg3_tier, leg3_edge, leg3_twroi,
+                   parlay_odds, ev_pct, min_odds, status, profit, graded_at
+            FROM parlays
+            ORDER BY created_at DESC
+        """, conn)
     df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
     df['n_legs'] = df['n_legs'].fillna(2).astype(int)
     return df
@@ -137,9 +130,7 @@ def fetch_parlays() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
-    import psycopg2
-    db_url = _get_db_url()
-    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=10)
+    from db_utils import get_conn
     params: list = [DFS_BOOKS]
     time_clause = ""
     if days_back > 0:
@@ -154,8 +145,8 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
         {time_clause}
         ORDER BY timestamp DESC
     """
-    df = pd.read_sql(sql, conn, params=params)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql(sql, conn, params=params)
     if df.empty:
         return df
     df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_localize(None)
@@ -193,24 +184,7 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def fetch_dfs_picks() -> pd.DataFrame:
     """Load DFS combo slips from the dfs_picks table."""
-    import psycopg2
-    db_url = _get_db_url()
-    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=10)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.tables
-                    WHERE table_name = 'dfs_picks'
-                )
-            """)
-            exists = cur.fetchone()[0]
-        if not exists:
-            conn.close()
-            return pd.DataFrame()
-    except Exception:
-        conn.close()
-        return pd.DataFrame()
+    from db_utils import get_conn
     sql = """
         SELECT id, created_at, platform, n_picks, play_type, multiplier, flex_qualifier,
                pick1_sel, pick1_market, pick1_matchup, pick1_league, pick1_smash, pick1_edge,
@@ -223,8 +197,16 @@ def fetch_dfs_picks() -> pd.DataFrame:
         FROM dfs_picks
         ORDER BY created_at DESC
     """
-    df = pd.read_sql(sql, conn)
-    conn.close()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                            "WHERE table_name = 'dfs_picks')")
+                if not cur.fetchone()[0]:
+                    return pd.DataFrame()
+            df = pd.read_sql(sql, conn)
+    except Exception:
+        return pd.DataFrame()
     if df.empty:
         return df
     df['created_at'] = pd.to_datetime(df['created_at'], utc=True).dt.tz_convert('US/Eastern')
