@@ -723,10 +723,8 @@ elif preset == "Alerted Bets Only":
     else:
         st.sidebar.warning("No 'alerted' column found in database.")
 
-if len(date_range)==2:
-    df_f = df_f[(df_f['timestamp'].dt.date>=date_range[0])&(df_f['timestamp'].dt.date<=date_range[1])]
-if time_range != (0, 23):
-    df_f = df_f[(df_f['timestamp'].dt.hour >= time_range[0]) & (df_f['timestamp'].dt.hour <= time_range[1])]
+# NOTE: the date/time window is applied LAST (see df_cat below) so the date-scoped
+# panels can reuse every other filter without inheriting the sidebar date range.
 df_f = df_f[df_f['league'].isin(sel_leagues)]
 df_f = df_f[df_f['tier'].isin(sel_tiers)]
 df_f = df_f[df_f['primary_sharp'].isin(sel_sharps)]
@@ -787,6 +785,16 @@ if 'sharp_odds' in df_f.columns and 'odds_val' in df_f.columns:
         df_f['sharp_gap_pct'] = np.nan
 else:
     df_f['sharp_gap_pct'] = np.nan
+
+# ── df_cat: all sidebar filters EXCEPT the date/time window. The date-scoped panels
+# (Today's Board, Yesterday's Bets) filter on this so they honor the sidebar filters
+# (league / book / tier / side / scores / placed) while keeping their own 24h /
+# yesterday window. Then apply the date/time window to produce the final df_f. ──
+df_cat = df_f.copy()
+if len(date_range) == 2:
+    df_f = df_f[(df_f['timestamp'].dt.date >= date_range[0]) & (df_f['timestamp'].dt.date <= date_range[1])]
+if time_range != (0, 23):
+    df_f = df_f[(df_f['timestamp'].dt.hour >= time_range[0]) & (df_f['timestamp'].dt.hour <= time_range[1])]
 
 closed = df_f[df_f['status'].isin(['Won','Lost','Push'])].copy()
 
@@ -970,15 +978,16 @@ st.subheader("🎯 Today's Board — Last 24h Alerts by Validated Edge")
 st.caption("Alerts from the last 24 hours, tagged with which validated edges (from above) each one "
            "matches. More matches = higher conviction. Bets grade fast (there is no persistent 'open' "
            "state), so this is a daily slate review — the real-time, placeable version is your Gambly "
-           "DMs. Uses the last 24h of alerted bets in the loaded window, independent of the sidebar filters.")
+           "DMs. Last 24h of alerted bets, honoring the sidebar filters (except the date window).")
 
-_ts_all  = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+_tb_src  = df_cat                                   # honor sidebar filters (minus the date window)
+_ts_all  = pd.to_datetime(_tb_src['timestamp'], utc=True, errors='coerce')
 _cutoff  = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=24)
-if 'alerted' in df.columns:
-    _recent_mask = (_ts_all >= _cutoff) & (df['alerted'] == True)
+if 'alerted' in _tb_src.columns:
+    _recent_mask = (_ts_all >= _cutoff) & (_tb_src['alerted'] == True)
 else:
     _recent_mask = (_ts_all >= _cutoff)
-_open_bets = df[_recent_mask].copy().reset_index(drop=True)
+_open_bets = _tb_src[_recent_mask].copy().reset_index(drop=True)
 if _open_bets.empty:
     st.info("No alerts in the last 24 hours — is the tracker running?")
 else:
@@ -1018,11 +1027,13 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 st.subheader("📅 Yesterday's Bets — Results")
 try:
-    _et_dates   = pd.to_datetime(df['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York')
+    _yb_src     = df_cat                              # honor sidebar filters (minus the date window)
+    _et_dates   = pd.to_datetime(_yb_src['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York')
     _yest_date  = (pd.Timestamp.now(tz='America/New_York') - pd.Timedelta(days=1)).date()
-    _y_alerted  = (df['alerted'] == True) if 'alerted' in df.columns else pd.Series(True, index=df.index)
-    _yday       = df[(_et_dates.dt.date == _yest_date) & _y_alerted].copy()
-    st.caption(f"Alerted bets from {_yest_date:%A, %b %d %Y} (ET). Units = profit ÷ {UNIT_SIZE:g} stake.")
+    _y_alerted  = (_yb_src['alerted'] == True) if 'alerted' in _yb_src.columns else pd.Series(True, index=_yb_src.index)
+    _yday       = _yb_src[(_et_dates.dt.date == _yest_date) & _y_alerted].copy()
+    st.caption(f"Alerted bets from {_yest_date:%A, %b %d %Y} (ET), honoring the sidebar filters. "
+               f"Units = profit ÷ {UNIT_SIZE:g} stake.")
 
     _yset = _yday[_yday['status'].isin(['Won', 'Lost'])].copy()
     if _yset.empty:
@@ -1090,8 +1101,17 @@ st.caption("Every bet you 🔍'd that cleared ≥+2% expected ROI (win-rate base
            "Watch **Actual ROI vs. Avg Expected** — if realized meets or beats expected, the gate works.")
 try:
     _pb = fetch_paper_bets()
+    # Honor the sidebar filters that map to paper bets: league and side. (paper_bets'
+    # 'book' is the takeable EXCHANGE — Novig/ProphetX/Kalshi — not the sidebar's Play
+    # Book, so the book filter is intentionally not applied here.)
+    if not _pb.empty and 'league' in _pb.columns:
+        _pb = _pb[_pb['league'].isin(sel_leagues)]
+    if not _pb.empty and 'side' in _pb.columns and sel_side != "Both":
+        _want = 'over' if sel_side == "Overs Only" else 'under'
+        _pb = _pb[_pb['side'].astype(str).str.lower() == _want]
     if _pb.empty:
-        st.info("No paper bets logged yet. Tap 🔍 on your bet DMs to log the ones that clear +2%.")
+        st.info("No paper bets logged yet (or none match the sidebar filters). "
+                "Tap 🔍 on your bet DMs to log the ones that clear +2%.")
     else:
         _pb['pnl']  = pd.to_numeric(_pb.get('pnl'), errors='coerce')
         _pb['eroi'] = pd.to_numeric(_pb.get('expected_roi'), errors='coerce')
