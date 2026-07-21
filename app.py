@@ -859,6 +859,19 @@ WHITELIST_POCKETS = [
     ('MLB', 'Pitcher Earned Runs', 'Under'), ('MLB', 'Hits+Runs+RBIs', 'Under'),
 ]
 
+# Exchange-sourced Under pockets — STABLE + positive in the 2026-07 stability review
+# ONLY when the sharp signal includes an exchange (Novig / ProphetX).
+EXCHANGE_UNDER_POCKETS = [
+    ('MLB',  'Pitcher Strikeouts',    'Under'),
+    ('MLB',  'Pitcher Outs Recorded', 'Under'),
+    ('WNBA', 'Points',                'Under'),
+    ('WNBA', 'Assists',               'Under'),
+]
+
+def _is_exchange_sharp(sharp_book):
+    s = str(sharp_book).lower()
+    return ('novig' in s) or ('prophet' in s)
+
 def match_validated_edges(row):
     """Return the list of validated-edge labels a bet matches (shared by Today's
     Board and Yesterday's scorecard so both use identical definitions)."""
@@ -875,6 +888,10 @@ def match_validated_edges(row):
     for lg, pc, sd in WHITELIST_POCKETS:
         if row.get('league') == lg and row.get('prop_cat') == pc and side == sd:
             tags.append(f'Whitelist:{lg}/{pc}/{sd}')
+    if side == 'Under' and _is_exchange_sharp(row.get('sharp_book', '')):
+        for lg, pc, sd in EXCHANGE_UNDER_POCKETS:
+            if row.get('league') == lg and row.get('prop_cat') == pc and side == sd:
+                tags.append(f'NV/PX:{lg}/{pc}/Under')
     tw = row.get('twroi')
     if pd.notna(tw) and tw > 0:
         tags.append('TWROI>0')
@@ -910,6 +927,13 @@ def _validated_edge_subsets(d):
     for lg, pc, side in WHITELIST_POCKETS:
         add(f"Sub-50 Whitelist: {lg} / {pc} / {side}", ['league', 'prop_cat', 'bet_side'],
             lambda x, lg=lg, pc=pc, side=side: (x['league'] == lg) & (x['prop_cat'] == pc) & (x['bet_side'] == side))
+
+    # Exchange-sourced (Novig/ProphetX) validated Under pockets.
+    for lg, pc, side in EXCHANGE_UNDER_POCKETS:
+        add(f"Novig/Prophet: {lg} / {pc} / Under", ['league', 'prop_cat', 'bet_side', 'sharp_book'],
+            lambda x, lg=lg, pc=pc, side=side: (x['league'] == lg) & (x['prop_cat'] == pc) &
+                  (x['bet_side'] == side) &
+                  (x['sharp_book'].astype(str).str.lower().str.contains('novig|prophet', regex=True, na=False)))
     return edges
 
 _ww_rows = []
