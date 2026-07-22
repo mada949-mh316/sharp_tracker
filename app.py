@@ -1169,6 +1169,83 @@ except Exception as _e:
 
 st.markdown("---")
 
+# ─────────────────────────────────────────────────────────────
+# TENNIS TRACKER — all-time since grading went live (2026-07-21)
+# ─────────────────────────────────────────────────────────────
+st.subheader("🎾 Tennis Tracker — All-Time Since Jul 21, 2026")
+st.caption("Tennis grading went live 2026-07-21 (livetennisapi); earlier tennis was ungraded, so this is the "
+           "clean record from that date forward, accumulating over time. Fixed scope — independent of the "
+           f"sidebar filters. Units = profit ÷ {UNIT_SIZE:g} stake.")
+_TENNIS_START = pd.Timestamp('2026-07-21', tz='America/New_York')
+try:
+    _t_et  = pd.to_datetime(df['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York')
+    _tdf   = df[(df['league'] == 'Tennis') & (_t_et >= _TENNIS_START)].copy()
+    _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy()
+    _texp  = int((_tdf['status'] == 'Expired').sum())
+    if _tset.empty:
+        st.info(f"No settled tennis bets since Jul 21 yet ({_texp} ungraded).")
+    else:
+        _p     = pd.to_numeric(_tset['profit'], errors='coerce').fillna(0.0)
+        _w     = int((_tset['status'] == 'Won').sum())
+        _l     = int((_tset['status'] == 'Lost').sum())
+        _pu    = int((_tset['status'] == 'Push').sum())
+        _units = _p.sum() / UNIT_SIZE
+        _roi   = (_p.sum() / (len(_tset) * UNIT_SIZE)) * 100
+        _wr    = (_w / (_w + _l) * 100) if (_w + _l) else 0.0
+        t1, t2, t3, t4, t5 = st.columns(5)
+        t1.metric("Record", f"{_w}-{_l}" + (f"-{_pu}" if _pu else ""), f"{_wr:.0f}% win")
+        t2.metric("Settled Bets", f"{len(_tset):,}")
+        t3.metric("Units", f"{_units:+.2f}u")
+        t4.metric("ROI", f"{_roi:+.2f}%")
+        t5.metric("Ungraded", f"{_texp:,}", help="Expired — never matched the free-tier match window; grade-forward only.")
+
+        _tset['_u']   = _p / UNIT_SIZE
+        _tset['_date'] = pd.to_datetime(_tset['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York').dt.date
+
+        st.markdown("**By market** (stability = same-sign & within 10 ROI pts across the H1/H2 median split):")
+        _mrows = []
+        for _mk, _g in _tset.groupby('market'):
+            _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
+            _s  = stability(_g)
+            _mrows.append({
+                'Market':  _mk,
+                'Bets':    len(_g),
+                'Record':  f"{int((_g['status']=='Won').sum())}-{int((_g['status']=='Lost').sum())}",
+                'Win %':   round(int((_g['status']=='Won').sum()) /
+                                 max(int((_g['status']=='Won').sum()) + int((_g['status']=='Lost').sum()), 1) * 100, 1),
+                'Units':   round(_gp.sum() / UNIT_SIZE, 2),
+                'ROI %':   round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
+                'Stability': verdict_badge(_s['verdict']),
+            })
+        st.dataframe(pd.DataFrame(_mrows).sort_values('Units', ascending=False),
+                     use_container_width=True, hide_index=True)
+
+        st.markdown("**By day:**")
+        _drows = []
+        for _d in sorted(_tset['_date'].dropna().unique()):
+            _g  = _tset[_tset['_date'] == _d]
+            _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
+            _dw = int((_g['status']=='Won').sum()); _dl = int((_g['status']=='Lost').sum())
+            _drows.append({
+                'Date':   _d,
+                'Bets':   len(_g),
+                'Record': f"{_dw}-{_dl}",
+                'Win %':  round(_dw / max(_dw + _dl, 1) * 100, 1),
+                'Units':  round(_gp.sum() / UNIT_SIZE, 2),
+                'ROI %':  round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
+            })
+        _dtbl = pd.DataFrame(_drows)
+        _dtbl['Cumulative u'] = _dtbl['Units'].cumsum().round(2)
+        st.dataframe(_dtbl, use_container_width=True, hide_index=True)
+        if _texp:
+            st.caption(f"⚠️ {_texp:,} tennis bets since Jul 21 are still ungraded (never matched the free-tier "
+                       "match window). Coverage is ~50–65% per day, so treat totals as a representative sample, "
+                       "not the full slate.")
+except Exception as _e:
+    st.warning(f"Couldn't build the tennis tracker ({_e}).")
+
+st.markdown("---")
+
 
 # ─────────────────────────────────────────────────────────────
 # TABS
