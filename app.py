@@ -1196,6 +1196,11 @@ _TENNIS_START = pd.Timestamp('2026-07-20', tz='US/Eastern')
 try:
     _tennis_all = fetch_tennis()
     _tdf   = _tennis_all[_tennis_all['timestamp'] >= _TENNIS_START].copy() if not _tennis_all.empty else _tennis_all
+    # Books excluded from tennis reporting (applied across every breakdown below).
+    _TENNIS_EXCLUDE_BOOKS = {'hardrock', 'underdog', 'prizepicks'}
+    if not _tdf.empty and 'play_book' in _tdf.columns:
+        _tdf = _tdf[~_tdf['play_book'].astype(str).str.lower().str.replace(' ', '', regex=False)
+                    .isin(_TENNIS_EXCLUDE_BOOKS)]
     _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy() if not _tdf.empty else _tdf
     _texp  = int((_tdf['status'] == 'Expired').sum()) if not _tdf.empty else 0
     if _tset.empty:
