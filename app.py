@@ -1236,6 +1236,24 @@ try:
         st.dataframe(pd.DataFrame(_mrows).sort_values('Units', ascending=False),
                      use_container_width=True, hide_index=True)
 
+        st.markdown("**By book** (which sportsbook the tennis bet was placed at):")
+        _brows = []
+        for _bk, _g in _tset.groupby(_tset['play_book'].fillna('Unknown')):
+            _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
+            _bw = int((_g['status'] == 'Won').sum()); _bl = int((_g['status'] == 'Lost').sum())
+            _s  = stability(_g)
+            _brows.append({
+                'Book':    _bk,
+                'Bets':    len(_g),
+                'Record':  f"{_bw}-{_bl}",
+                'Win %':   round(_bw / max(_bw + _bl, 1) * 100, 1),
+                'Units':   round(_gp.sum() / UNIT_SIZE, 2),
+                'ROI %':   round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
+                'Stability': verdict_badge(_s['verdict']),
+            })
+        st.dataframe(pd.DataFrame(_brows).sort_values('Units', ascending=False),
+                     use_container_width=True, hide_index=True)
+
         st.markdown("**By day:**")
         _drows = []
         for _d in sorted(_tset['_date'].dropna().unique()):
@@ -1254,7 +1272,7 @@ try:
         _dtbl['Cumulative u'] = _dtbl['Units'].cumsum().round(2)
         st.dataframe(_dtbl, use_container_width=True, hide_index=True)
         if _texp:
-            st.caption(f"⚠️ {_texp:,} tennis bets since Jul 21 are still ungraded (never matched the free-tier "
+            st.caption(f"⚠️ {_texp:,} tennis bets since Jul 20 are still ungraded (never matched the free-tier "
                        "match window). Coverage is ~50–65% per day, so treat totals as a representative sample, "
                        "not the full slate.")
 except Exception as _e:
