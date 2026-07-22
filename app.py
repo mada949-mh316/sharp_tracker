@@ -107,8 +107,24 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
         if df['timestamp'].dt.tz is None:
             df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
         df['timestamp'] = df['timestamp'].dt.tz_convert('US/Eastern')
-        
+
     return df
+
+@st.cache_data(ttl=300)
+def fetch_tennis() -> pd.DataFrame:
+    """All tennis bets loaded directly. clean_raw_df filters to VALID_LEAGUES (which
+    excludes Tennis), so the main df never contains tennis — this dedicated loader
+    bypasses that and isn't capped by the sidebar window, giving the Tennis Tracker
+    the full all-time record without injecting tennis into the rest of the dashboard."""
+    from db_utils import load_bets
+    raw = load_bets(leagues=['Tennis'])
+    if raw.empty:
+        return raw
+    raw['profit'] = pd.to_numeric(
+        raw['profit'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False),
+        errors='coerce').fillna(0.0)
+    raw['timestamp'] = pd.to_datetime(raw['timestamp'], utc=True, errors='coerce').dt.tz_convert('US/Eastern')
+    return raw
 
 @st.cache_data(ttl=300)
 def fetch_parlays() -> pd.DataFrame:
@@ -1172,18 +1188,18 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 # TENNIS TRACKER — all-time since grading went live (2026-07-21)
 # ─────────────────────────────────────────────────────────────
-st.subheader("🎾 Tennis Tracker — All-Time Since Jul 21, 2026")
-st.caption("Tennis grading went live 2026-07-21 (livetennisapi); earlier tennis was ungraded, so this is the "
+st.subheader("🎾 Tennis Tracker — All-Time Since Jul 20, 2026")
+st.caption("Tennis grading went live 2026-07-20 (livetennisapi); earlier tennis was ungraded, so this is the "
            "clean record from that date forward, accumulating over time. Fixed scope — independent of the "
-           f"sidebar filters. Units = profit ÷ {UNIT_SIZE:g} stake.")
-_TENNIS_START = pd.Timestamp('2026-07-21', tz='America/New_York')
+           f"sidebar filters (loaded separately, all-time). Units = profit ÷ {UNIT_SIZE:g} stake.")
+_TENNIS_START = pd.Timestamp('2026-07-20', tz='US/Eastern')
 try:
-    _t_et  = pd.to_datetime(df['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York')
-    _tdf   = df[(df['league'] == 'Tennis') & (_t_et >= _TENNIS_START)].copy()
-    _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy()
-    _texp  = int((_tdf['status'] == 'Expired').sum())
+    _tennis_all = fetch_tennis()
+    _tdf   = _tennis_all[_tennis_all['timestamp'] >= _TENNIS_START].copy() if not _tennis_all.empty else _tennis_all
+    _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy() if not _tdf.empty else _tdf
+    _texp  = int((_tdf['status'] == 'Expired').sum()) if not _tdf.empty else 0
     if _tset.empty:
-        st.info(f"No settled tennis bets since Jul 21 yet ({_texp} ungraded).")
+        st.info(f"No settled tennis bets since Jul 20 yet ({_texp} ungraded).")
     else:
         _p     = pd.to_numeric(_tset['profit'], errors='coerce').fillna(0.0)
         _w     = int((_tset['status'] == 'Won').sum())
@@ -1200,7 +1216,7 @@ try:
         t5.metric("Ungraded", f"{_texp:,}", help="Expired — never matched the free-tier match window; grade-forward only.")
 
         _tset['_u']   = _p / UNIT_SIZE
-        _tset['_date'] = pd.to_datetime(_tset['timestamp'], utc=True, errors='coerce').dt.tz_convert('America/New_York').dt.date
+        _tset['_date'] = _tset['timestamp'].dt.date   # already tz-aware US/Eastern
 
         st.markdown("**By market** (stability = same-sign & within 10 ROI pts across the H1/H2 median split):")
         _mrows = []
