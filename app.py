@@ -1188,14 +1188,12 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 # TENNIS TRACKER — all-time since grading went live (2026-07-21)
 # ─────────────────────────────────────────────────────────────
-st.subheader("🎾 Tennis Tracker — All-Time Since Jul 20, 2026")
-st.caption("Tennis grading went live 2026-07-20 (livetennisapi); earlier tennis was ungraded, so this is the "
-           "clean record from that date forward, accumulating over time. Fixed scope — independent of the "
-           f"sidebar filters (loaded separately, all-time). Units = profit ÷ {UNIT_SIZE:g} stake.")
-_TENNIS_START = pd.Timestamp('2026-07-20', tz='US/Eastern')
+st.subheader("🎾 Tennis Tracker — All-Time")
+st.caption("Every graded tennis bet (full history — backfilled via ESPN, graded daily). Fixed scope — "
+           f"independent of the sidebar filters (loaded separately). Units = profit ÷ {UNIT_SIZE:g} stake.")
 try:
     _tennis_all = fetch_tennis()
-    _tdf   = _tennis_all[_tennis_all['timestamp'] >= _TENNIS_START].copy() if not _tennis_all.empty else _tennis_all
+    _tdf   = _tennis_all.copy() if not _tennis_all.empty else _tennis_all
     # Books excluded from tennis reporting (applied across every breakdown below).
     _TENNIS_EXCLUDE_BOOKS = {'hardrock', 'underdog', 'prizepicks'}
     if not _tdf.empty and 'play_book' in _tdf.columns:
@@ -1204,7 +1202,7 @@ try:
     _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy() if not _tdf.empty else _tdf
     _texp  = int((_tdf['status'] == 'Expired').sum()) if not _tdf.empty else 0
     if _tset.empty:
-        st.info(f"No settled tennis bets since Jul 20 yet ({_texp} ungraded).")
+        st.info(f"No settled tennis bets yet ({_texp} ungraded).")
     else:
         _p     = pd.to_numeric(_tset['profit'], errors='coerce').fillna(0.0)
         _w     = int((_tset['status'] == 'Won').sum())
@@ -1218,7 +1216,7 @@ try:
         t2.metric("Settled Bets", f"{len(_tset):,}")
         t3.metric("Units", f"{_units:+.2f}u")
         t4.metric("ROI", f"{_roi:+.2f}%")
-        t5.metric("Ungraded", f"{_texp:,}", help="Expired — never matched the free-tier match window; grade-forward only.")
+        t5.metric("Ungraded", f"{_texp:,}", help="Expired — ESPN had no matching result (mostly obscure lower-tier events).")
 
         _tset['_u']   = _p / UNIT_SIZE
         _tset['_date'] = _tset['timestamp'].dt.date   # already tz-aware US/Eastern
@@ -1259,7 +1257,7 @@ try:
         st.dataframe(pd.DataFrame(_brows).sort_values('Units', ascending=False),
                      use_container_width=True, hide_index=True)
 
-        st.markdown("**By day:**")
+        st.markdown("**By day (most recent 21 — cumulative is all-time):**")
         _drows = []
         for _d in sorted(_tset['_date'].dropna().unique()):
             _g  = _tset[_tset['_date'] == _d]
@@ -1274,12 +1272,11 @@ try:
                 'ROI %':  round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
             })
         _dtbl = pd.DataFrame(_drows)
-        _dtbl['Cumulative u'] = _dtbl['Units'].cumsum().round(2)
-        st.dataframe(_dtbl, use_container_width=True, hide_index=True)
+        _dtbl['Cumulative u'] = _dtbl['Units'].cumsum().round(2)   # running total over ALL days
+        st.dataframe(_dtbl.tail(21), use_container_width=True, hide_index=True)
         if _texp:
-            st.caption(f"⚠️ {_texp:,} tennis bets since Jul 20 are still ungraded (never matched the free-tier "
-                       "match window). Coverage is ~50–65% per day, so treat totals as a representative sample, "
-                       "not the full slate.")
+            st.caption(f"⚠️ {_texp:,} tennis bets are still ungraded (ESPN had no matching result — mostly "
+                       "obscure lower-tier events). The graded set below is the representative sample.")
 except Exception as _e:
     st.warning(f"Couldn't build the tennis tracker ({_e}).")
 
