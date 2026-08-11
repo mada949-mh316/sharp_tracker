@@ -464,22 +464,23 @@ def render_bucket_stability(bkt_df):
 # Lets the dashboard recompute the stamped score from stored fields so you can
 # verify the live scores are still hitting their backtested ROI.
 # ─────────────────────────────────────────────────────────────
-# 2026-08-11: Total's 'price' factor DROPPED (60d recheck: inverted for both MLB and
-# WNBA) and MLB flipped out of POST_TOTAL_OVER_SPORTS (60d recheck: MLB Over -5.28%
-# ROI vs Under +8.49%, n=382/432 -- reversed from the original assumption; WNBA's Over
-# side re-confirmed +31.28% vs -26.24%, n=196/211, unchanged). See tracker.py's
-# compute_post_score docstring for the full writeup, including why Moneyline (also
-# found inverted for MLB) was left alone rather than flipped.
+# 2026-08-11 CORRECTION: Total's 'price' drop + MLB Over->Under flip were REVERTED --
+# that recheck mixed ALL tiers instead of filtering to GOLD (the only tier this system
+# is validated on; the dashboard itself already warns SILVER/STANDARD invert). Re-run
+# restricted to tier=GOLD only: MLB Over +7.10% vs Under -11.34% (n=63/67, matches the
+# ORIGINAL assumption), WNBA Over even stronger GOLD-only (+53.70% vs -53.14%, n=29/30).
+# 'price' showed no clear inversion GOLD-only either. Back to the original design.
 POST_AVOID = ['Player Steals', 'Player Assists', 'Player Points + Assists', 'Pitcher Walks Allowed']
 POST_GOOD_SPREAD_BOOKS = ('caesars', 'fanduel', 'thescore')
-POST_TOTAL_OVER_SPORTS = ('WNBA',)  # totals: OVERS win here; elsewhere (incl. MLB now) Unders
+POST_TOTAL_OVER_SPORTS = ('MLB', 'WNBA')  # totals: OVERS win here; elsewhere Unders
 # Moneyline: flipped for MLB 2026-08-11 -- both factors inverted in the 60d recheck (price=True
-# -9.47% vs False +4.96%; dog=True -9.23% vs False +6.45%). Flipped per owner call despite no CI
-# clearing zero yet (directionally positive in every book slice tested, MLB season nearly over so
-# not much data left to wait for a confirm). WNBA untouched, still fine unflipped.
+# -9.47% vs False +4.96%; dog=True -9.23% vs False +6.45%). UNLIKE Totals, this one WAS
+# re-verified restricted to tier=GOLD only and the flip's direction held: gap_ok=True -3.50%
+# vs False +15.17% (n=34/18); dog_ok=True -3.08% vs False +19.36% (n=38/14) -- thin (n=52
+# GOLD-only) but consistent, so left flipped. WNBA untouched, still fine unflipped.
 POST_ML_FLIP_LEAGUES = ('MLB',)
 POST_EXPECTED = {  # backtested post-zone ROI for reference lines
-    'Prop':   ('3-4/4', 13.0), 'Total': ('1-2/2', 15.0), 'Spread': ('2-3/3', 12.0),
+    'Prop':   ('3-4/4', 13.0), 'Total': ('2-3/3', 15.0), 'Spread': ('2-3/3', 12.0),
     # Moneyline: mixed by league now -- MLB flipped 2026-08-11 (directionally +6.4% on
     # n=164, not yet CI-confirmed), WNBA still on the original unflipped factors and
     # still low-edge/"usually skip" per the original design. No single clean number.
@@ -544,8 +545,8 @@ def compute_post_scores(df_in):
         if bt == 'Total':
             over_sport = str(r['league']) in POST_TOTAL_OVER_SPORTS
             side_ok = (side == 'Over') if over_sport else (side == 'Under')
-            sc = int(side_ok) + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
-            return pd.Series([sc, 2, 'Total'])
+            sc = int(gap_ok) + int(side_ok) + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
+            return pd.Series([sc, 3, 'Total'])
         if bt in ('Point Spread', 'Spread'):
             sc = (int(any(b in r['book'] for b in POST_GOOD_SPREAD_BOOKS))
                   + int(r['consensus'] >= 2) + int(o > 0))
@@ -2752,7 +2753,7 @@ with tab_post:
     else:
         kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread", "Moneyline"], horizontal=True, key="post_kind_sel")
         sub = ps_df[ps_df['post_kind'] == kind_sel].copy()
-        maxv = {'Prop': 4, 'Total': 2, 'Spread': 3, 'Moneyline': 2}[kind_sel]
+        maxv = {'Prop': 4, 'Total': 3, 'Spread': 3, 'Moneyline': 2}[kind_sel]
         post_zone, exp_roi = POST_EXPECTED.get(kind_sel, ('', 0))
 
         if sub.empty:
