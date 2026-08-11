@@ -480,6 +480,10 @@ POST_TOTAL_OVER_SPORTS = ('WNBA',)  # totals: OVERS win here; elsewhere (incl. M
 POST_ML_FLIP_LEAGUES = ('MLB',)
 POST_EXPECTED = {  # backtested post-zone ROI for reference lines
     'Prop':   ('3-4/4', 13.0), 'Total': ('1-2/2', 15.0), 'Spread': ('2-3/3', 12.0),
+    # Moneyline: mixed by league now -- MLB flipped 2026-08-11 (directionally +6.4% on
+    # n=164, not yet CI-confirmed), WNBA still on the original unflipped factors and
+    # still low-edge/"usually skip" per the original design. No single clean number.
+    'Moneyline': ('2/2', 6.0),
 }
 
 def _imp_prob(o):
@@ -2746,9 +2750,9 @@ with tab_post:
         st.info("No settled bets match the current sidebar filters (need GOLD-tier defaults & −200/+200 "
                 "for the validated view).")
     else:
-        kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread"], horizontal=True, key="post_kind_sel")
+        kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread", "Moneyline"], horizontal=True, key="post_kind_sel")
         sub = ps_df[ps_df['post_kind'] == kind_sel].copy()
-        maxv = {'Prop': 4, 'Total': 2, 'Spread': 3}[kind_sel]
+        maxv = {'Prop': 4, 'Total': 2, 'Spread': 3, 'Moneyline': 2}[kind_sel]
         post_zone, exp_roi = POST_EXPECTED.get(kind_sel, ('', 0))
 
         if sub.empty:
