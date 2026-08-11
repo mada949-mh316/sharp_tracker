@@ -464,11 +464,22 @@ def render_bucket_stability(bkt_df):
 # Lets the dashboard recompute the stamped score from stored fields so you can
 # verify the live scores are still hitting their backtested ROI.
 # ─────────────────────────────────────────────────────────────
+# 2026-08-11: Total's 'price' factor DROPPED (60d recheck: inverted for both MLB and
+# WNBA) and MLB flipped out of POST_TOTAL_OVER_SPORTS (60d recheck: MLB Over -5.28%
+# ROI vs Under +8.49%, n=382/432 -- reversed from the original assumption; WNBA's Over
+# side re-confirmed +31.28% vs -26.24%, n=196/211, unchanged). See tracker.py's
+# compute_post_score docstring for the full writeup, including why Moneyline (also
+# found inverted for MLB) was left alone rather than flipped.
 POST_AVOID = ['Player Steals', 'Player Assists', 'Player Points + Assists', 'Pitcher Walks Allowed']
 POST_GOOD_SPREAD_BOOKS = ('caesars', 'fanduel', 'thescore')
-POST_TOTAL_OVER_SPORTS = ('MLB', 'WNBA')  # totals: OVERS win here; elsewhere Unders
+POST_TOTAL_OVER_SPORTS = ('WNBA',)  # totals: OVERS win here; elsewhere (incl. MLB now) Unders
+# Moneyline: flipped for MLB 2026-08-11 -- both factors inverted in the 60d recheck (price=True
+# -9.47% vs False +4.96%; dog=True -9.23% vs False +6.45%). Flipped per owner call despite no CI
+# clearing zero yet (directionally positive in every book slice tested, MLB season nearly over so
+# not much data left to wait for a confirm). WNBA untouched, still fine unflipped.
+POST_ML_FLIP_LEAGUES = ('MLB',)
 POST_EXPECTED = {  # backtested post-zone ROI for reference lines
-    'Prop':   ('3-4/4', 13.0), 'Total': ('2-3/3', 15.0), 'Spread': ('2-3/3', 12.0),
+    'Prop':   ('3-4/4', 13.0), 'Total': ('1-2/2', 15.0), 'Spread': ('2-3/3', 12.0),
 }
 
 def _imp_prob(o):
@@ -529,13 +540,18 @@ def compute_post_scores(df_in):
         if bt == 'Total':
             over_sport = str(r['league']) in POST_TOTAL_OVER_SPORTS
             side_ok = (side == 'Over') if over_sport else (side == 'Under')
-            sc = int(gap_ok) + int(side_ok) + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
-            return pd.Series([sc, 3, 'Total'])
+            sc = int(side_ok) + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
+            return pd.Series([sc, 2, 'Total'])
         if bt in ('Point Spread', 'Spread'):
             sc = (int(any(b in r['book'] for b in POST_GOOD_SPREAD_BOOKS))
                   + int(r['consensus'] >= 2) + int(o > 0))
             return pd.Series([sc, 3, 'Spread'])
-        sc = int(gap_ok) + int(o > 0)
+        # Moneyline: flipped for MLB 2026-08-11 (see tracker.py's POST_ML_FLIP_LEAGUES comment) --
+        # both factors inverted in the 60d recheck; WNBA left unflipped, still fine there.
+        if str(r['league']) in POST_ML_FLIP_LEAGUES:
+            sc = int(not gap_ok) + int(o <= 0)
+        else:
+            sc = int(gap_ok) + int(o > 0)
         return pd.Series([sc, 2, 'Moneyline'])
 
     d[['post_score', 'post_max', 'post_kind']] = d.apply(_score, axis=1)
@@ -2732,7 +2748,7 @@ with tab_post:
     else:
         kind_sel = st.radio("Bet type", ["Prop", "Total", "Spread"], horizontal=True, key="post_kind_sel")
         sub = ps_df[ps_df['post_kind'] == kind_sel].copy()
-        maxv = {'Prop': 4, 'Total': 3, 'Spread': 3}[kind_sel]
+        maxv = {'Prop': 4, 'Total': 2, 'Spread': 3}[kind_sel]
         post_zone, exp_roi = POST_EXPECTED.get(kind_sel, ('', 0))
 
         if sub.empty:
