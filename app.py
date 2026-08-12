@@ -472,13 +472,37 @@ def render_bucket_stability(bkt_df):
 # 'price' showed no clear inversion GOLD-only either. Back to the original design.
 POST_AVOID = ['Player Steals', 'Player Assists', 'Player Points + Assists', 'Pitcher Walks Allowed']
 POST_GOOD_SPREAD_BOOKS = ('caesars', 'fanduel', 'thescore')
-POST_TOTAL_OVER_SPORTS = ('MLB', 'WNBA')  # totals: OVERS win here; elsewhere Unders
-# Moneyline: flipped for MLB 2026-08-11 -- both factors inverted in the 60d recheck (price=True
-# -9.47% vs False +4.96%; dog=True -9.23% vs False +6.45%). UNLIKE Totals, this one WAS
-# re-verified restricted to tier=GOLD only and the flip's direction held: gap_ok=True -3.50%
-# vs False +15.17% (n=34/18); dog_ok=True -3.08% vs False +19.36% (n=38/14) -- thin (n=52
-# GOLD-only) but consistent, so left flipped. WNBA untouched, still fine unflipped.
-POST_ML_FLIP_LEAGUES = ('MLB',)
+
+# 2026-08-11 TIER RECHECK (mirrors tracker.py's _total_over_side/_ml_favors_favorite --
+# keep in sync): is the GOLD-validated Total side / Moneyline flip still right in SILVER/
+# STANDARD? Not uniform -- some tiers agree with GOLD, some flatly invert, and which one
+# agrees depends on BOTH league and bet type. BRONZE/WATCH never checked (too thin) --
+# default untested tiers to the GOLD-validated side rather than assume an inversion.
+def _total_over_side(league, tier):
+    """MLB: GOLD favors Over (+7.10%/-11.34%, n=63/67); SILVER (-8.66%/+11.47%, n=190/228)
+    and STANDARD (-5.62%/+13.25%, n=128/137) BOTH invert to Under. WNBA: Over stays correct
+    in every tier checked (GOLD +53.70%/-53.14%, SILVER +27.96%/-33.98%, STANDARD
+    +26.79%/-7.62%) -- just weaker outside GOLD, never actually flips."""
+    if league == 'WNBA':
+        return True
+    if league == 'MLB':
+        return tier not in ('SILVER', 'STANDARD')
+    return False
+
+
+def _ml_favors_favorite(league, tier):
+    """MLB: GOLD flips (+19.36% fav vs -6.95% dog, n=14/37); SILVER agrees, even stronger
+    (+29.98%/-27.94%, n=42/63); STANDARD inverts back to the original dog-favoring logic
+    (-19.11% fav vs +17.26% dog, n=44/39). WNBA: GOLD favors dog (+24.18%/-31.10%, n=11/5);
+    STANDARD agrees (+19.00%/-13.78%, n=15/21); SILVER inverts to favor favorite
+    (-10.31% dog vs +17.81% fav, n=13/11)."""
+    if league == 'MLB':
+        return tier != 'STANDARD'
+    if league == 'WNBA':
+        return tier == 'SILVER'
+    return False
+
+
 POST_EXPECTED = {  # backtested post-zone ROI for reference lines
     'Prop':   ('3-4/4', 13.0), 'Total': ('2-3/3', 15.0), 'Spread': ('2-3/3', 12.0),
     # Moneyline: mixed by league now -- MLB flipped 2026-08-11 (directionally +6.4% on
@@ -542,18 +566,18 @@ def compute_post_scores(df_in):
             sc = (int(side == 'Under') + int(not any(a in mkt for a in POST_AVOID))
                   + int(gap_ok) + int(bool(r['hot'])))
             return pd.Series([sc, 4, 'Prop'])
+        lg, tier = str(r['league']), r.get('tier')
         if bt == 'Total':
-            over_sport = str(r['league']) in POST_TOTAL_OVER_SPORTS
-            side_ok = (side == 'Over') if over_sport else (side == 'Under')
+            wants_over = _total_over_side(lg, tier)
+            side_ok = (side == 'Over') if wants_over else (side == 'Under')
             sc = int(gap_ok) + int(side_ok) + int(pd.notna(r['smash_score']) and r['smash_score'] >= 56)
             return pd.Series([sc, 3, 'Total'])
         if bt in ('Point Spread', 'Spread'):
             sc = (int(any(b in r['book'] for b in POST_GOOD_SPREAD_BOOKS))
                   + int(r['consensus'] >= 2) + int(o > 0))
             return pd.Series([sc, 3, 'Spread'])
-        # Moneyline: flipped for MLB 2026-08-11 (see tracker.py's POST_ML_FLIP_LEAGUES comment) --
-        # both factors inverted in the 60d recheck; WNBA left unflipped, still fine there.
-        if str(r['league']) in POST_ML_FLIP_LEAGUES:
+        # Moneyline: tier-aware 2026-08-11, see _ml_favors_favorite.
+        if _ml_favors_favorite(lg, tier):
             sc = int(not gap_ok) + int(o <= 0)
         else:
             sc = int(gap_ok) + int(o > 0)
@@ -1204,115 +1228,16 @@ try:
 except Exception as _e:
     st.warning(f"Couldn't load the paper-trade panel ({_e}).")
 
-st.markdown("---")
-
-# ─────────────────────────────────────────────────────────────
-# TENNIS TRACKER — all-time since grading went live (2026-07-21)
-# ─────────────────────────────────────────────────────────────
-st.subheader("🎾 Tennis Tracker — All-Time")
-st.caption("Every graded tennis bet (full history — backfilled via ESPN, graded daily). Fixed scope — "
-           f"independent of the sidebar filters (loaded separately). Units = profit ÷ {UNIT_SIZE:g} stake.")
-try:
-    _tennis_all = fetch_tennis()
-    _tdf   = _tennis_all.copy() if not _tennis_all.empty else _tennis_all
-    # Books excluded from tennis reporting (applied across every breakdown below).
-    _TENNIS_EXCLUDE_BOOKS = {'hardrock', 'underdog', 'prizepicks'}
-    if not _tdf.empty and 'play_book' in _tdf.columns:
-        _tdf = _tdf[~_tdf['play_book'].astype(str).str.lower().str.replace(' ', '', regex=False)
-                    .isin(_TENNIS_EXCLUDE_BOOKS)]
-    _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy() if not _tdf.empty else _tdf
-    _texp  = int((_tdf['status'] == 'Expired').sum()) if not _tdf.empty else 0
-    if _tset.empty:
-        st.info(f"No settled tennis bets yet ({_texp} ungraded).")
-    else:
-        _p     = pd.to_numeric(_tset['profit'], errors='coerce').fillna(0.0)
-        _w     = int((_tset['status'] == 'Won').sum())
-        _l     = int((_tset['status'] == 'Lost').sum())
-        _pu    = int((_tset['status'] == 'Push').sum())
-        _units = _p.sum() / UNIT_SIZE
-        _roi   = (_p.sum() / (len(_tset) * UNIT_SIZE)) * 100
-        _wr    = (_w / (_w + _l) * 100) if (_w + _l) else 0.0
-        t1, t2, t3, t4, t5 = st.columns(5)
-        t1.metric("Record", f"{_w}-{_l}" + (f"-{_pu}" if _pu else ""), f"{_wr:.0f}% win")
-        t2.metric("Settled Bets", f"{len(_tset):,}")
-        t3.metric("Units", f"{_units:+.2f}u")
-        t4.metric("ROI", f"{_roi:+.2f}%")
-        t5.metric("Ungraded", f"{_texp:,}", help="Expired — ESPN had no matching result (mostly obscure lower-tier events).")
-
-        _tset['_u']   = _p / UNIT_SIZE
-        _tset['_date'] = _tset['timestamp'].dt.date   # already tz-aware US/Eastern
-
-        st.markdown("**By market** (stability = same-sign & within 10 ROI pts across the H1/H2 median split):")
-        _mrows = []
-        for _mk, _g in _tset.groupby('market'):
-            _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
-            _s  = stability(_g)
-            _mrows.append({
-                'Market':  _mk,
-                'Bets':    len(_g),
-                'Record':  f"{int((_g['status']=='Won').sum())}-{int((_g['status']=='Lost').sum())}",
-                'Win %':   round(int((_g['status']=='Won').sum()) /
-                                 max(int((_g['status']=='Won').sum()) + int((_g['status']=='Lost').sum()), 1) * 100, 1),
-                'Units':   round(_gp.sum() / UNIT_SIZE, 2),
-                'ROI %':   round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
-                'Stability': verdict_badge(_s['verdict']),
-            })
-        st.dataframe(pd.DataFrame(_mrows).sort_values('Units', ascending=False),
-                     use_container_width=True, hide_index=True)
-
-        st.markdown("**By book** (which sportsbook the tennis bet was placed at):")
-        _brows = []
-        for _bk, _g in _tset.groupby(_tset['play_book'].fillna('Unknown')):
-            _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
-            _bw = int((_g['status'] == 'Won').sum()); _bl = int((_g['status'] == 'Lost').sum())
-            _s  = stability(_g)
-            _brows.append({
-                'Book':    _bk,
-                'Bets':    len(_g),
-                'Record':  f"{_bw}-{_bl}",
-                'Win %':   round(_bw / max(_bw + _bl, 1) * 100, 1),
-                'Units':   round(_gp.sum() / UNIT_SIZE, 2),
-                'ROI %':   round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
-                'Stability': verdict_badge(_s['verdict']),
-            })
-        st.dataframe(pd.DataFrame(_brows).sort_values('Units', ascending=False),
-                     use_container_width=True, hide_index=True)
-
-        st.markdown("**By day (most recent 21 — cumulative is all-time):**")
-        _drows = []
-        for _d in sorted(_tset['_date'].dropna().unique()):
-            _g  = _tset[_tset['_date'] == _d]
-            _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
-            _dw = int((_g['status']=='Won').sum()); _dl = int((_g['status']=='Lost').sum())
-            _drows.append({
-                'Date':   _d,
-                'Bets':   len(_g),
-                'Record': f"{_dw}-{_dl}",
-                'Win %':  round(_dw / max(_dw + _dl, 1) * 100, 1),
-                'Units':  round(_gp.sum() / UNIT_SIZE, 2),
-                'ROI %':  round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
-            })
-        _dtbl = pd.DataFrame(_drows)
-        _dtbl['Cumulative u'] = _dtbl['Units'].cumsum().round(2)   # running total over ALL days
-        st.dataframe(_dtbl.tail(21), use_container_width=True, hide_index=True)
-        if _texp:
-            st.caption(f"⚠️ {_texp:,} tennis bets are still ungraded (ESPN had no matching result — mostly "
-                       "obscure lower-tier events). The graded set below is the representative sample.")
-except Exception as _e:
-    st.warning(f"Couldn't build the tennis tracker ({_e}).")
-
-st.markdown("---")
-
-
 # ─────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────
 (tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
- tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post) = st.tabs([
+ tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post,
+ tab_tennis) = st.tabs([
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
     "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks",
-    "🎯 Post Score"
+    "🎯 Post Score", "🎾 Tennis"
 ])
 
 
@@ -2823,6 +2748,104 @@ with tab_post:
             else:
                 st.info(f"Only {len(pz)} post-zone {kind_sel} bets in this window — widen the data window for a trend.")
 
+
+
+
+with tab_tennis:
+    # ─────────────────────────────────────────────────────────────
+    # TENNIS TRACKER — all-time since grading went live (2026-07-21)
+    # ─────────────────────────────────────────────────────────────
+    st.subheader("🎾 Tennis Tracker — All-Time")
+    st.caption("Every graded tennis bet (full history — backfilled via ESPN, graded daily). Fixed scope — "
+               f"independent of the sidebar filters (loaded separately). Units = profit ÷ {UNIT_SIZE:g} stake.")
+    try:
+        _tennis_all = fetch_tennis()
+        _tdf   = _tennis_all.copy() if not _tennis_all.empty else _tennis_all
+        # Books excluded from tennis reporting (applied across every breakdown below).
+        _TENNIS_EXCLUDE_BOOKS = {'hardrock', 'underdog', 'prizepicks'}
+        if not _tdf.empty and 'play_book' in _tdf.columns:
+            _tdf = _tdf[~_tdf['play_book'].astype(str).str.lower().str.replace(' ', '', regex=False)
+                        .isin(_TENNIS_EXCLUDE_BOOKS)]
+        _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy() if not _tdf.empty else _tdf
+        _texp  = int((_tdf['status'] == 'Expired').sum()) if not _tdf.empty else 0
+        if _tset.empty:
+            st.info(f"No settled tennis bets yet ({_texp} ungraded).")
+        else:
+            _p     = pd.to_numeric(_tset['profit'], errors='coerce').fillna(0.0)
+            _w     = int((_tset['status'] == 'Won').sum())
+            _l     = int((_tset['status'] == 'Lost').sum())
+            _pu    = int((_tset['status'] == 'Push').sum())
+            _units = _p.sum() / UNIT_SIZE
+            _roi   = (_p.sum() / (len(_tset) * UNIT_SIZE)) * 100
+            _wr    = (_w / (_w + _l) * 100) if (_w + _l) else 0.0
+            t1, t2, t3, t4, t5 = st.columns(5)
+            t1.metric("Record", f"{_w}-{_l}" + (f"-{_pu}" if _pu else ""), f"{_wr:.0f}% win")
+            t2.metric("Settled Bets", f"{len(_tset):,}")
+            t3.metric("Units", f"{_units:+.2f}u")
+            t4.metric("ROI", f"{_roi:+.2f}%")
+            t5.metric("Ungraded", f"{_texp:,}", help="Expired — ESPN had no matching result (mostly obscure lower-tier events).")
+
+            _tset['_u']   = _p / UNIT_SIZE
+            _tset['_date'] = _tset['timestamp'].dt.date   # already tz-aware US/Eastern
+
+            st.markdown("**By market** (stability = same-sign & within 10 ROI pts across the H1/H2 median split):")
+            _mrows = []
+            for _mk, _g in _tset.groupby('market'):
+                _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
+                _s  = stability(_g)
+                _mrows.append({
+                    'Market':  _mk,
+                    'Bets':    len(_g),
+                    'Record':  f"{int((_g['status']=='Won').sum())}-{int((_g['status']=='Lost').sum())}",
+                    'Win %':   round(int((_g['status']=='Won').sum()) /
+                                     max(int((_g['status']=='Won').sum()) + int((_g['status']=='Lost').sum()), 1) * 100, 1),
+                    'Units':   round(_gp.sum() / UNIT_SIZE, 2),
+                    'ROI %':   round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
+                    'Stability': verdict_badge(_s['verdict']),
+                })
+            st.dataframe(pd.DataFrame(_mrows).sort_values('Units', ascending=False),
+                         use_container_width=True, hide_index=True)
+
+            st.markdown("**By book** (which sportsbook the tennis bet was placed at):")
+            _brows = []
+            for _bk, _g in _tset.groupby(_tset['play_book'].fillna('Unknown')):
+                _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
+                _bw = int((_g['status'] == 'Won').sum()); _bl = int((_g['status'] == 'Lost').sum())
+                _s  = stability(_g)
+                _brows.append({
+                    'Book':    _bk,
+                    'Bets':    len(_g),
+                    'Record':  f"{_bw}-{_bl}",
+                    'Win %':   round(_bw / max(_bw + _bl, 1) * 100, 1),
+                    'Units':   round(_gp.sum() / UNIT_SIZE, 2),
+                    'ROI %':   round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
+                    'Stability': verdict_badge(_s['verdict']),
+                })
+            st.dataframe(pd.DataFrame(_brows).sort_values('Units', ascending=False),
+                         use_container_width=True, hide_index=True)
+
+            st.markdown("**By day (most recent 21 — cumulative is all-time):**")
+            _drows = []
+            for _d in sorted(_tset['_date'].dropna().unique()):
+                _g  = _tset[_tset['_date'] == _d]
+                _gp = pd.to_numeric(_g['profit'], errors='coerce').fillna(0.0)
+                _dw = int((_g['status']=='Won').sum()); _dl = int((_g['status']=='Lost').sum())
+                _drows.append({
+                    'Date':   _d,
+                    'Bets':   len(_g),
+                    'Record': f"{_dw}-{_dl}",
+                    'Win %':  round(_dw / max(_dw + _dl, 1) * 100, 1),
+                    'Units':  round(_gp.sum() / UNIT_SIZE, 2),
+                    'ROI %':  round(_gp.sum() / (len(_g) * UNIT_SIZE) * 100, 1),
+                })
+            _dtbl = pd.DataFrame(_drows)
+            _dtbl['Cumulative u'] = _dtbl['Units'].cumsum().round(2)   # running total over ALL days
+            st.dataframe(_dtbl.tail(21), use_container_width=True, hide_index=True)
+            if _texp:
+                st.caption(f"⚠️ {_texp:,} tennis bets are still ungraded (ESPN had no matching result — mostly "
+                           "obscure lower-tier events). The graded set below is the representative sample.")
+    except Exception as _e:
+        st.warning(f"Couldn't build the tennis tracker ({_e}).")
 
 # ─── DEBUG ────────────────────────────────────────────────────
 with st.expander("🛠️ Debug"):
