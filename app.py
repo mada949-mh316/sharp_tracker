@@ -992,6 +992,11 @@ def _validated_edge_subsets(d):
     add("MLB Total Overs", ['league', 'bet_type', 'bet_side'],
         lambda x: (x['league'] == 'MLB') & (x['bet_type'] == 'Total') & (x['bet_side'] == 'Over'))
     add("TWROI > 0", ['twroi'], lambda x: x['twroi'] > 0)
+    # No league restriction here on purpose -- the sidebar's own League filter already
+    # scopes `d` before this runs, so unchecking WNBA (etc.) naturally narrows this row
+    # too instead of needing a second, redundant league condition baked into the edge.
+    add("CB>50, Book TWROI>0, Market TWROI>0", ['twroi', 'bk_twroi', 'catboost_score'],
+        lambda x: (x['twroi'] > 0) & (x['bk_twroi'] > 0) & (x['catboost_score'] > 50))
 
     for lg, pc, side in WHITELIST_POCKETS:
         add(f"Sub-50 Whitelist: {lg} / {pc} / {side}", ['league', 'prop_cat', 'bet_side'],
