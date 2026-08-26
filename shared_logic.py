@@ -12,8 +12,92 @@ Updated 2026-04-26:
 """
 
 import re
+import os
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
+
+# 2026-08-20: `bets.timestamp` was mislabeled at the source until this moment --
+# tracker.py stamped rows with datetime.now() on its host, which is naive *local*
+# time (America/New_York), then that got inserted into a timestamptz column on a
+# UTC-session DB connection and was silently stored as if it were already UTC.
+# Rows at/before this cutover (Mac wall-clock, the OLD mislabeled convention) are
+# old-style -- their raw value IS already ET, no conversion needed. Rows after are
+# new-style -- genuine UTC, needs the normal conversion. See project memory
+# project_date_anchor_et_utc_gotcha and post_grader.py/signal_review.py's matching
+# constant (kept in sync manually -- same literal value, not a shared import, since
+# this module has no dependency on either of those files).
+BETS_TS_BUG_CUTOVER = pd.Timestamp('2026-08-20 10:08:25')
+
+
+def bets_ts_to_et_series(ts_series):
+    """Vectorized cutover-aware conversion of a `bets.timestamp` Series (e.g. from
+    pd.read_sql on the `bets` table) to tz-aware America/New_York. See
+    BETS_TS_BUG_CUTOVER / bets_ts_hour_et above. Use .dt.hour / .dt.date on the result
+    same as any tz-aware datetime Series.
+
+    2026-08-26: `bets` now also has a precomputed `ts_et` column (backfilled once with
+    this exact function, and stamped correctly by tracker.py's write_bets_to_db() for
+    every row since) -- for a plain SQL query or a fresh pd.read_sql, just SELECT ts_et
+    directly instead of calling this function on `timestamp`. This function still exists
+    for any code that only has a raw `timestamp` value/Series and no easy way to
+    join/reselect ts_et, and as the source of truth ts_et was derived from -- but new
+    code should prefer the column."""
+    raw = pd.to_datetime(ts_series, utc=True).dt.tz_localize(None)
+    is_old = raw <= BETS_TS_BUG_CUTOVER
+    et_old = raw[is_old].dt.tz_localize(_ET)
+    et_new = raw[~is_old].dt.tz_localize('UTC').dt.tz_convert(_ET)
+    return pd.concat([et_old, et_new]).sort_index()
+
+
+def bets_ts_hour_et_series(ts_series):
+    """Vectorized cutover-aware ET hour for a `bets.timestamp` Series. See
+    bets_ts_to_et_series above."""
+    return bets_ts_to_et_series(ts_series).dt.hour
+
+
+def bets_ts_hour_et(ts):
+    """Cutover-aware ET hour for a single bets.timestamp value (str, naive datetime,
+    or tz-aware datetime) as actually stored in the `bets` table. Use this instead of
+    a raw `.hour` on that column -- see BETS_TS_BUG_CUTOVER above."""
+    if ts is None or ts == '':
+        return None
+    dt = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts).strip())
+    naive = dt.replace(tzinfo=None) if dt.tzinfo else dt
+    if naive <= BETS_TS_BUG_CUTOVER.to_pydatetime():
+        return naive.hour  # old-style: raw value IS already ET
+    return naive.replace(tzinfo=ZoneInfo('UTC')).astimezone(_ET).hour
+
+
+def load_owner_note_cache():
+    """Loads owner_note_cache (populated nightly by rebuild_owner_notes.py) into
+    {segment_key: {'roi', 'n', 'stable', 'positive'}}. Backs tracker.py's
+    owner_market_note()/owner_sharp_source_note() -- those used to be hardcoded
+    percentages baked into if/else branches with nothing to catch staleness (see
+    rebuild_owner_notes.py's docstring). Returns {} on any failure; callers should
+    treat an empty/missing key as 'no stable read yet', not silence."""
+    try:
+        import psycopg2
+        # 2026-08-26: was a hardcoded DB password here as the fallback default -- this file
+        # gets pushed to a PUBLIC GitHub repo (app.py's dependency), so a literal credential
+        # here would be a real exposure, not just a reliability convenience. Every real
+        # runtime (launchd plists, systemd services, Streamlit Cloud secrets) already sets
+        # DATABASE_URL, so this degrades to the documented {} return instead of connecting
+        # if it's ever missing -- no hardcoded fallback needed.
+        db_url = os.environ.get('DATABASE_URL')
+        if not db_url:
+            return {}
+        conn = psycopg2.connect(db_url, sslmode='disable')
+        cur = conn.cursor()
+        cur.execute("SELECT segment_key, roi, n, stable, positive FROM owner_note_cache")
+        rows = cur.fetchall()
+        conn.close()
+        return {k: {'roi': float(roi), 'n': int(n), 'stable': bool(stable), 'positive': bool(positive)}
+                for k, roi, n, stable, positive in rows}
+    except Exception:
+        return {}
 
 # ─────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -78,10 +162,6 @@ SHARP_BOOK_MARKET_WHITELIST = {
 }
 
 SHARP_BOOK_MARKET_BLACKLIST = {
-    ("Kalshi",     "NFL"),
-    ("NoVigApp",   "Tennis"),
-    ("Prophet",    "Tennis"),
-    ("Pinnacle",   "Tennis"),
     ("Prophet",    "NCAAF"),
     ("NoVigApp",   "NCAAF"),
     ("NoVigApp",   "Total Games"),
@@ -90,6 +170,17 @@ SHARP_BOOK_MARKET_BLACKLIST = {
     ("Polymarket", "Tennis"),
     ("Polymarket", "NCAAB"),
 }
+# Kalshi/NFL unblocked 2026-08-13 (owner): pre-existing, undated blacklist entry with no
+# recorded rationale in this file's history -- owner's read is Kalshi may be sharper this
+# NFL season than whenever this was originally added. Same grace-period logic as any other
+# fresh-season league now applies: let it through and let the data speak once real volume
+# accrues, same treatment the Tennis blacklist got on 2026-08-09 before being partly reversed.
+# Tennis (NoVigApp/Prophet/Pinnacle) unblocked 2026-08-09: the 2026-04-26
+# blacklist was stale — re-check on smash_score>=50 population (n=3742)
+# showed +3.8% ROI combined, STABLE, improving H1 +3.2% -> H2 +4.4%.
+# Pinnacle +6.9% (n=1260), Prophet +4.7% (n=766), NoVigApp +2.5% (n=1228),
+# all stable/positive individually. Kalshi (-4.7%, n=93) and Polymarket
+# (-1.9%, unstable) stay blacklisted for Tennis.
 
 # Prop categories that are structurally negative within specific leagues.
 PROP_CATEGORY_LEAGUE_BLACKLIST = {
@@ -107,7 +198,6 @@ PROP_CATEGORY_LEAGUE_BLACKLIST = {
 LOW_CONFIDENCE_BOOKS = {"Kalshi"}
 
 LEAGUE_SHARP_BOOK_SUPPRESS = {
-    "Tennis": {"NoVigApp", "Prophet", "Pinnacle"},
     "NCAAF":  {"Prophet",  "NoVigApp"},
 }
 
@@ -212,7 +302,7 @@ def refresh_signal_roi_cache(db_url=None, csv_path=None):
         except: return 0
 
     df['_odds'] = df['play_odds'].apply(_odds)
-    df['_hour'] = _pd.to_datetime(df['timestamp'], errors='coerce').dt.hour
+    df['_hour'] = bets_ts_hour_et_series(df['timestamp'])
 
     is_player    = df['market'].str.contains('Player', case=False, na=False)
     is_under     = df['play_selection'].str.contains('Under', case=False, na=False)
@@ -319,6 +409,28 @@ def get_decimal_odds(american_odds):
     if american_odds > 0: return 1 + (american_odds / 100.0)
     return 1 + (100.0 / abs(american_odds))
 
+def exchange_cents_suffix(odds, book):
+    """' (NNc)' showing the cents price equivalent to this American odds (implied
+    probability x 100 -- exchange-style contracts cost that many cents and pay $1/100c if
+    correct). 2026-08-19 (owner request, Kalshi only): Kalshi natively quotes in cents, not
+    American odds, so every system here converting to American odds for display can make the
+    line look like it moved when it hasn't (or vice versa) -- showing both lets the owner
+    cross-check against what the book's own app actually shows before placing.
+    2026-08-25 (owner request): extended to Polymarket/PolymarketUS -- same cents-native
+    pricing, same problem (owner took a PolymarketUS -104 line without realizing what that
+    was in cents). Empty string for any other book or unparseable odds, so it's safe to
+    always append inline."""
+    if not any(k in str(book or '').lower() for k in ('kalshi', 'polymarket')):
+        return ''
+    try:
+        o = float(str(odds).replace('+', '').replace('−', '-'))
+    except (TypeError, ValueError):
+        return ''
+    if o == 0:
+        return ''
+    p = 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0)
+    return f" ({round(p * 100)}¢)"
+
 def get_odds_bucket(val):
     if val < -750:         return "< -750"
     if -750 <= val < -300: return "-750 to -300"
@@ -391,6 +503,173 @@ def get_bet_side(selection):
     if re.search(r'\bover\b', s):  return "Over"
     if re.search(r'\bunder\b', s): return "Under"
     return "Other"
+
+
+# ─────────────────────────────────────────────────────────────
+# STABLE MARKET-TYPE EDGES (2026-08-19, owner request)
+# ─────────────────────────────────────────────────────────────
+# One shared rule table, checked by BOTH dm_worker.py (owner DM tag) and
+# post_grader.py (next-day morning report), so the two never drift apart.
+# Every rule here passed signal_review.py's stability bar (same sign, within 10 ROI
+# points, both halves of the data) at the prop-type / market-type granularity, scoped
+# -200/+200 and 9am-9pm ET, smash>=50 (the same precondition every one of these was
+# validated under -- see the 2026-08-19 session's per-prop/per-market breakdown).
+# `positive=False` rows are STABLE-NEGATIVE -- proven bad, worth a warning, not a bet.
+def _implied_prob_american(o):
+    try:
+        o = float(o)
+    except (TypeError, ValueError):
+        return None
+    if o == 0:
+        return None
+    return abs(o) / (abs(o) + 100) if o < 0 else 100 / (o + 100)
+
+
+def sharp_gap_frac(odds_val, sharp_odds):
+    """Mean sharp implied prob - play implied prob, as a fraction (0.05 = 5pp gap)."""
+    pi = _implied_prob_american(odds_val)
+    if pi is None:
+        return None
+    nums = re.findall(r'-?\d+\.?\d*', str(sharp_odds))
+    sis = [_implied_prob_american(float(n)) for n in nums]
+    sis = [x for x in sis if x is not None]
+    if not sis:
+        return None
+    return sum(sis) / len(sis) - pi
+
+
+# (league, prop_category_or_None, market_type_or_None, test(features)->bool,
+#  label, roi_str, n, positive)
+#
+# 2026-08-20: fully rebuilt. The original 26-rule table (built 2026-08-19) was derived
+# from bets.timestamp, which was mislabeled at the source -- tracker.py stamped rows
+# with naive local (EDT) time that got silently stored as if it were UTC, so every
+# "convert to ET" hour-of-day computation double-shifted by 4-5h and scoped the WRONG
+# bets into/out of the 9am-9pm window used to validate these rules. Fixed at the
+# source; re-ran the full battery against corrected timestamps with the same STABLE
+# bar used everywhere else in this project (same sign both halves AND within 10 ROI
+# points, n>=20 with >=5 per half). Of the original 26: 11 remained genuinely STABLE
+# (kept below, 2 with their sign flipped -- Rebounds Under and Assists TWROI>0 turned
+# out to be stable-NEGATIVE, not positive). The other 15 dropped to UNSTABLE/thin under
+# corrected scoping and were removed rather than kept on stale numbers.
+STABLE_MARKET_EDGES = [
+    # ── MLB Pitcher Props ── (all require smash>=50, their original shared precondition)
+    ('MLB', 'Pitcher Strikeouts', None, lambda f: f['smash_ok'] and f['side'] == 'Under',
+     'Pitcher Ks Under', '+10.9%', 728, True),
+    ('MLB', 'Pitcher Strikeouts', None, lambda f: f['smash_ok'] and f['side'] == 'Over',
+     'Pitcher Ks Over', '+1.8%', 517, True),
+    ('MLB', 'Pitcher Strikeouts', None, lambda f: f['smash_ok'] and f['bk_twroi'] is not None and f['bk_twroi'] < 0,
+     'Pitcher Ks Book-TWROI<0', '+4.3%', 309, True),
+    ('MLB', 'Pitcher Strikeouts', None, lambda f: f['smash_ok'] and f['twroi'] is not None and f['twroi'] > 0,
+     'Pitcher Ks TWROI>0', '+8.1%', 975, True),
+    ('MLB', 'Pitcher Walks Allowed', None, lambda f: f['smash_ok'] and f['side'] == 'Over',
+     'Pitcher Walks Allowed Over', '+9.6%', 104, True),
+
+    # ── WNBA Props ──
+    ('WNBA', 'Rebounds', None, lambda f: f['smash_ok'] and f['side'] == 'Under',
+     'Rebounds Under', '-4.9%', 100, False),
+    ('WNBA', 'Assists', None, lambda f: f['smash_ok'] and f['side'] == 'Under',
+     'Assists Under', '+7.0%', 113, True),
+    ('WNBA', 'Assists', None, lambda f: f['smash_ok'] and f['twroi'] is not None and f['twroi'] > 0,
+     'Assists TWROI>0', '-5.3%', 176, False),
+
+    # ── MLB Mainlines ──
+    ('MLB', None, 'Total', lambda f: f['smash_ok'] and f['twroi'] is not None and f['twroi'] > 0,
+     'MLB Total TWROI>0', '+16.9%', 258, True),
+
+    # ── WNBA Mainlines ──
+    ('WNBA', None, 'Total', lambda f: f['smash_ok'] and f['twroi'] is not None and f['twroi'] > 0,
+     'WNBA Total TWROI>0', '+16.3%', 119, True),
+
+    # ── Segment markets (2026-08-20, owner report) -- 1st Inning/1st Half/etc. tracked as
+    # their own category now, not folded into full-game Total/Spread (see market_type
+    # comment in matched_stable_market_edges()). Full stability sweep across every segment
+    # found only these two genuinely STABLE; everything else (MLB 1st 5 Innings, NBA/WNBA
+    # 1st Half pooled, MLB 1st Inning pooled) was UNSTABLE despite some big-looking numbers.
+    ('WNBA', None, 'Total-1st Half', lambda f: f['smash_ok'] and f['side'] == 'Over',
+     'WNBA 1st Half Total Over', '+7.0%', 65, True),
+    ('MLB', None, 'Total-1st Inning', lambda f: f['smash_ok'] and f['side'] == 'Over',
+     'MLB 1st Inning Total Over', '-13.1%', 79, False),
+
+    # ── Tennis Mainlines ── 2026-08-26 (owner request): re-derived from bets.ts_et (the
+    # corrected timing column -- see BETS_TS_BUG_CUTOVER) after the owner's earlier "Tennis
+    # ML 12pm-5pm" finding turned out to be a timing-bug artifact (corrected: n=753,
+    # -1.81% ROI, unstable). Full ET-hour sweep on the corrected data found this window
+    # instead: n=370, +12.63% ROI, STABLE (H1 +13.25%/H2 +12.10%, nearly identical). No
+    # smash filter -- validated on the unfiltered population; smash>=50 shrinks it to n=130
+    # and it stops being stable (H1 -3.32%/H2 +4.48%), so deliberately NOT gated on smash_ok
+    # the way the rules above are.
+    ('Tennis', None, 'Moneyline', lambda f: f['hour_et'] is not None and 18 <= f['hour_et'] < 22,
+     'Tennis ML 6-10pm ET', '+12.63%', 370, True),
+]
+# 2026-08-20: "MLB Total Book-TWROI<0" removed. It read STABLE +11.2% (n=315) the day this
+# table was first built, but that pool was contaminated -- categorize_bet() has no period
+# awareness, so "1st Inning Total Runs", "1st Half Total Points", "1st 5 Innings" segment
+# markets were silently mixed in with full-game Total. Re-run with segment markets properly
+# excluded (see matched_stable_market_edges()'s is_segment check below): clean data is only
+# +3.5% (n=159) and UNSTABLE. The other two Total rules survived the same re-check (and got
+# updated to their clean numbers) -- this was specifically a Book-TWROI<0 problem, not every
+# MLB Total rule.
+
+
+def matched_stable_market_edges(league, market, selection, odds_val, sharp_odds,
+                                 smash_score, catboost_score, twroi, bk_twroi, hour_et=None):
+    """Every STABLE_MARKET_EDGES rule this bet matches, as a list of dicts:
+    {'label','roi','n','positive'}. Most rules require smash>=50 -- that was originally a
+    blanket function-level gate (their shared validation precondition at derivation time),
+    but 2026-08-26 that got moved into a per-rule `smash_ok` feature flag instead, since a
+    new rule (Tennis ML 6-10pm ET) was validated WITHOUT a smash filter and the blanket gate
+    would have silently shrunk it to a much smaller, unstable subset (n=370 -> n=130,
+    stability flips). Every pre-existing rule's test() explicitly ANDs f['smash_ok'] to
+    preserve its exact original behavior; only rules that opt in by referencing it are
+    smash-gated."""
+    try:
+        smash_ok = smash_score is not None and float(smash_score) >= 50
+    except (TypeError, ValueError):
+        smash_ok = False
+    cat = categorize_bet(market, selection)
+    prop_cat = extract_prop_category(market) if cat == 'Player Prop' else None
+    # 2026-08-20 (owner report): categorize_bet() returns plain 'Total'/'Point Spread' for
+    # ANY market containing those words, with no awareness of period -- "1st Inning Total
+    # Runs", "1st Half Total Points", "1st 5 Innings Run Line" were all silently getting
+    # counted as full-game MLB/WNBA Total or Spread, alongside genuinely different markets
+    # with their own (often much less stable -- confirmed in the PP EV stability sweep the
+    # same day) economics. extract_total_subtype()'s regex isn't actually Total-specific
+    # despite its docstring/name -- it detects the period pattern in the market string
+    # regardless of bet type, so it works for Spread segments too.
+    # Segment bets get their own market_type string ("Total-1st Inning", "Spread-1st Half",
+    # etc.) instead of the plain 'Total'/'Spread' full-game bets use -- so a segment bet can
+    # NEVER accidentally match a full-game rule (different string), and a dedicated
+    # segment-specific rule (see STABLE_MARKET_EDGES below) can target it precisely.
+    _base_mt = 'Spread' if cat == 'Point Spread' else cat
+    if cat == 'Player Prop':
+        market_type = None
+    elif cat in ('Total', 'Point Spread'):
+        _subtype = extract_total_subtype(market, league)
+        market_type = _base_mt if _subtype == 'Full Game' else f'{_base_mt}-{_subtype}'
+    else:
+        market_type = _base_mt
+    features = {
+        'side': get_bet_side(selection),
+        'twroi': twroi, 'bk_twroi': bk_twroi, 'catboost': catboost_score,
+        'sharp_gap': sharp_gap_frac(odds_val, sharp_odds),
+        'smash_ok': smash_ok, 'hour_et': hour_et,
+    }
+    out = []
+    for lg, pc, mt, test, label, roi, n, positive in STABLE_MARKET_EDGES:
+        if lg != league:
+            continue
+        if pc is not None and pc != prop_cat:
+            continue
+        if mt is not None and mt != market_type:
+            continue
+        try:
+            if not test(features):
+                continue
+        except Exception:
+            continue
+        out.append({'label': label, 'roi': roi, 'n': n, 'positive': positive})
+    return out
 
 def extract_prop_category(market):
     m = str(market).lower().replace("player ", "").replace("alternate ", "").replace("alt ", "")
@@ -524,10 +803,8 @@ def classify_tier(bet_data):
 
     prime_time = False
     try:
-        ts = bet_data.get('timestamp', '')
-        if ts:
-            dt = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts).strip())
-            prime_time = dt.hour in PRIME_HOURS
+        h = bets_ts_hour_et(bet_data.get('timestamp', ''))
+        prime_time = h is not None and h in PRIME_HOURS
     except Exception:
         pass
 

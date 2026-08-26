@@ -12,7 +12,7 @@ from shared_logic import (
     TIER_ORDER, TIER_COLORS, TIER_EMOJI, ODDS_BUCKET_ORDER,
     CONSENSUS_THRESHOLD, DFS_BOOKS,
     parse_odds_val, calculate_profit, calculate_arb_percent,
-    clean_raw_df, add_derived_columns,
+    clean_raw_df, add_derived_columns, get_bet_side,
 )
 from db_utils import load_bets, get_date_range, count_bets
 
@@ -101,12 +101,13 @@ def fetch_from_db(days_back: int) -> pd.DataFrame:
     df = add_derived_columns(df)
     
     # --- TIMEZONE FIX ---
-    # The database stores time in UTC. This converts the entire 
-    # dataframe to Eastern Time so the date picker works perfectly.
+    # 2026-08-20: was a naive tz_localize('UTC').tz_convert('US/Eastern') here, which
+    # assumed the column was genuine UTC. It wasn't (until this fix landed) -- see
+    # shared_logic.BETS_TS_BUG_CUTOVER. Cutover-aware conversion handles both the old
+    # mislabeled rows and new genuinely-UTC rows correctly.
     if 'timestamp' in df.columns:
-        if df['timestamp'].dt.tz is None:
-            df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
-        df['timestamp'] = df['timestamp'].dt.tz_convert('US/Eastern')
+        from shared_logic import bets_ts_to_et_series
+        df['timestamp'] = bets_ts_to_et_series(df['timestamp'])
 
     return df
 
@@ -165,8 +166,8 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
         df = pd.read_sql(sql, conn, params=params)
     if df.empty:
         return df
-    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_localize(None)
-    df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+    from shared_logic import bets_ts_to_et_series
+    df['timestamp'] = bets_ts_to_et_series(df['timestamp'])
     df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0)
     # derive platform label
     _plat_map = {b.lower(): b for b in DFS_BOOKS}
@@ -630,6 +631,18 @@ if 'profit' in df.columns:
 if 'liquidity' in df.columns:
     df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0).astype(float)
 
+# ── Sharp gap (mean sharp implied prob - play implied prob), in percentage points ──
+# Computed here (on the master df, before filtering) so it's available both to the
+# sidebar filter below and to the "What's Working" panel's live backtest.
+if 'sharp_odds' in df.columns and 'odds_val' in df.columns:
+    try:
+        _gaps = df.apply(lambda r: _row_sharp_gap(r.get('odds_val'), r.get('sharp_odds', '')), axis=1)
+        df['sharp_gap_pct'] = pd.to_numeric(_gaps, errors='coerce') * 100
+    except Exception:
+        df['sharp_gap_pct'] = np.nan
+else:
+    df['sharp_gap_pct'] = np.nan
+
 
 # ── Filters ──
 st.sidebar.markdown("---")
@@ -725,6 +738,16 @@ if HAS_SMASH_SCORE_SIDEBAR:
 else:
     min_smash, max_smash = 0.0, 100.0
 
+HAS_SHARP_GAP_SIDEBAR = 'sharp_gap_pct' in df.columns and df['sharp_gap_pct'].notna().sum() > 0
+if HAS_SHARP_GAP_SIDEBAR:
+    st.sidebar.markdown("**Sharp Gap % Range**")
+    st.sidebar.caption("Mean sharp implied prob − play implied prob. Smash≥50 & Gap>5% backtests at +9.7% ROI.")
+    gp1, gp2 = st.sidebar.columns(2)
+    min_gap = gp1.number_input("Min Gap%", value=-100.0, step=1.0, format="%.0f", key="min_gap")
+    max_gap = gp2.number_input("Max Gap%", value=100.0, min_value=-100.0, max_value=100.0, step=1.0, key="max_gap")
+else:
+    min_gap, max_gap = -100.0, 100.0
+
 HAS_CAT_SCORE_SIDEBAR = 'catboost_score' in df.columns and (df['catboost_score'] > 0).sum() > 0
 if HAS_CAT_SCORE_SIDEBAR:
     st.sidebar.markdown("**CatBoost Score Range**")
@@ -805,6 +828,8 @@ if HAS_GEM_SCORE_SIDEBAR and (min_gem > 0.0 or max_gem < 100.0):
     df_f = df_f[df_f['gem_score'].notna() & (df_f['gem_score'] >= min_gem) & (df_f['gem_score'] <= max_gem)]
 if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
     df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
+if HAS_SHARP_GAP_SIDEBAR and (min_gap > -100.0 or max_gap < 100.0):
+    df_f = df_f[df_f['sharp_gap_pct'].notna() & (df_f['sharp_gap_pct'] >= min_gap) & (df_f['sharp_gap_pct'] <= max_gap)]
 if HAS_CAT_SCORE_SIDEBAR and (min_cat > 0.0 or max_cat < 100.0):
     df_f = df_f[df_f['catboost_score'].notna() & (df_f['catboost_score'] > 0) & (df_f['catboost_score'] >= min_cat) & (df_f['catboost_score'] <= max_cat)]
 if HAS_TWROI_SIDEBAR and (min_twroi > -100 or max_twroi < 9999):
@@ -836,16 +861,8 @@ if HAS_PLACED:
 else:
     placed_filter = "All"
 
-# ── Sharp gap (mean sharp implied prob - play implied prob), in percentage points ──
-if 'sharp_odds' in df_f.columns and 'odds_val' in df_f.columns:
-    try:
-        _gaps = df_f.apply(
-            lambda r: _row_sharp_gap(r.get('odds_val'), r.get('sharp_odds', '')), axis=1)
-        df_f['sharp_gap_pct'] = pd.to_numeric(_gaps, errors='coerce') * 100
-    except Exception:
-        df_f['sharp_gap_pct'] = np.nan
-else:
-    df_f['sharp_gap_pct'] = np.nan
+# sharp_gap_pct is computed once on the master df (right after load) and carried
+# through df_f via the df.copy() above — see the Sharp Gap sidebar filter for why.
 
 # ── df_cat: all sidebar filters EXCEPT the date/time window. The date-scoped panels
 # (Today's Board, Yesterday's Bets) filter on this so they honor the sidebar filters
@@ -922,10 +939,16 @@ st.caption("The Golden Rule: a signal only counts if it holds direction in BOTH 
            "tested live against your CURRENT filtered settled bets. Stable + positive first.")
 
 # Sub-50 smash whitelist pockets — segments that hold up even without the smash>=50 gate.
+# 2026-08-19: removed ('MLB', 'Pitcher Walks Allowed', 'Over') -- see tracker.py's
+# SUB50_WHITELIST comment for why (looked STABLE -5.1% once signal_review.py's
+# 9am-9pm ET scope was added; the pocket lists are kept in sync).
+# 2026-08-20: re-added -- that reading was an artifact of a bets.timestamp mislabeling
+# bug (see tracker.py's SUB50_WHITELIST comment), not a real negative. Corrected: +7.3%.
 WHITELIST_POCKETS = [
     ('WNBA', 'Assists', 'Under'), ('WNBA', 'Threes', 'Over'),
-    ('MLB', 'Pitcher Hits Allowed', 'Over'), ('MLB', 'Pitcher Walks Allowed', 'Over'),
+    ('MLB', 'Pitcher Hits Allowed', 'Over'),
     ('MLB', 'Pitcher Earned Runs', 'Under'), ('MLB', 'Hits+Runs+RBIs', 'Under'),
+    ('MLB', 'Pitcher Walks Allowed', 'Over'),
 ]
 
 # Exchange-sourced Under pockets — STABLE + positive in the 2026-07 stability review
@@ -964,6 +987,13 @@ def match_validated_edges(row):
     tw = row.get('twroi')
     if pd.notna(tw) and tw > 0:
         tags.append('TWROI>0')
+    # Validated 2026-08-08: TWROI>0 & Book TWROI>0 & CatBoost>50 — MLB +8.7% to +11.0% ROI,
+    # WNBA +9.3% to +13.0% ROI (30/60/90-day windows), STABLE (H1/H2 both positive, improving).
+    # NBA checked separately and came back weaker + decaying — scoped to MLB/WNBA only.
+    bk_tw = row.get('bk_twroi')
+    if (pd.notna(tw) and tw > 0 and pd.notna(bk_tw) and bk_tw > 0
+            and pd.notna(cat) and cat > 50 and row.get('league') in ('MLB', 'WNBA')):
+        tags.append('🚀 TWROI+BkTWROI+CB>50')
     return tags
 
 def _validated_edge_subsets(d):
@@ -2760,9 +2790,10 @@ with tab_tennis:
     # ─────────────────────────────────────────────────────────────
     # TENNIS TRACKER — all-time since grading went live (2026-07-21)
     # ─────────────────────────────────────────────────────────────
-    st.subheader("🎾 Tennis Tracker — All-Time")
-    st.caption("Every graded tennis bet (full history — backfilled via ESPN, graded daily). Fixed scope — "
-               f"independent of the sidebar filters (loaded separately). Units = profit ÷ {UNIT_SIZE:g} stake.")
+    st.subheader("🎾 Tennis Tracker")
+    st.caption("Every graded tennis bet (backfilled via ESPN, graded daily), honoring the sidebar's Date Range, "
+               "Play Book, and Bet Direction filters (League/Tier/Sharp Signal don't apply -- Tennis has no tier "
+               f"scoring, and this view is tennis-only already). Units = profit ÷ {UNIT_SIZE:g} stake.")
     try:
         _tennis_all = fetch_tennis()
         _tdf   = _tennis_all.copy() if not _tennis_all.empty else _tennis_all
@@ -2771,6 +2802,23 @@ with tab_tennis:
         if not _tdf.empty and 'play_book' in _tdf.columns:
             _tdf = _tdf[~_tdf['play_book'].astype(str).str.lower().str.replace(' ', '', regex=False)
                         .isin(_TENNIS_EXCLUDE_BOOKS)]
+        # 2026-08-26 (owner request): honor the sidebar's Date Range / Play Book / Bet
+        # Direction / Odds Range filters -- this view used to be a fixed all-time snapshot,
+        # completely ignoring the sidebar. League/Tier/Sharp Signal are skipped on purpose:
+        # League is moot (already tennis-only), and Tier/primary_sharp are derived by
+        # add_derived_columns(), which fetch_tennis() never runs (Tennis is excluded from
+        # VALID_LEAGUES, so that machinery was never validated against it).
+        if not _tdf.empty and 'play_book' in _tdf.columns:
+            _tdf = _tdf[_tdf['play_book'].isin(sel_books)]
+        if not _tdf.empty and 'timestamp' in _tdf.columns and len(date_range) == 2:
+            _tdf = _tdf[(_tdf['timestamp'].dt.date >= date_range[0]) & (_tdf['timestamp'].dt.date <= date_range[1])]
+        if not _tdf.empty and 'play_selection' in _tdf.columns and sel_side != "Both":
+            _tdf = _tdf.assign(_side=_tdf['play_selection'].apply(get_bet_side))
+            _want_side = 'Over' if sel_side == "Overs Only" else 'Under'
+            _tdf = _tdf[_tdf['_side'] == _want_side]
+        if not _tdf.empty and 'play_odds' in _tdf.columns:
+            _tdf = _tdf.assign(_odds_val=_tdf['play_odds'].apply(parse_odds_val))
+            _tdf = _tdf[(_tdf['_odds_val'] >= min_odds) & (_tdf['_odds_val'] <= max_odds)]
         _tset  = _tdf[_tdf['status'].isin(['Won', 'Lost', 'Push'])].copy() if not _tdf.empty else _tdf
         _texp  = int((_tdf['status'] == 'Expired').sum()) if not _tdf.empty else 0
         if _tset.empty:
