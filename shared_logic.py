@@ -45,7 +45,9 @@ def bets_ts_to_et_series(ts_series):
     for any code that only has a raw `timestamp` value/Series and no easy way to
     join/reselect ts_et, and as the source of truth ts_et was derived from -- but new
     code should prefer the column."""
-    raw = pd.to_datetime(ts_series, utc=True).dt.tz_localize(None)
+    # The historical column contains both naive and offset-bearing ISO timestamps.
+    # pandas otherwise infers one format from the first row and rejects the other.
+    raw = pd.to_datetime(ts_series, utc=True, format='mixed').dt.tz_localize(None)
     is_old = raw <= BETS_TS_BUG_CUTOVER
     et_old = raw[is_old].dt.tz_localize(_ET)
     et_new = raw[~is_old].dt.tz_localize('UTC').dt.tz_convert(_ET)
@@ -162,8 +164,6 @@ SHARP_BOOK_MARKET_WHITELIST = {
 }
 
 SHARP_BOOK_MARKET_BLACKLIST = {
-    ("Prophet",    "NCAAF"),
-    ("NoVigApp",   "NCAAF"),
     ("NoVigApp",   "Total Games"),
     ("Kalshi",     "Tennis"),
     ("Kalshi",     "NCAAB"),
@@ -181,6 +181,14 @@ SHARP_BOOK_MARKET_BLACKLIST = {
 # Pinnacle +6.9% (n=1260), Prophet +4.7% (n=766), NoVigApp +2.5% (n=1228),
 # all stable/positive individually. Kalshi (-4.7%, n=93) and Polymarket
 # (-1.9%, unstable) stay blacklisted for Tennis.
+# NCAAF (Prophet/NoVigApp) unblocked 2026-08-27 (owner report: "I see them popping up on
+# propprofessor but not in the alerts"): another pre-existing, undated blacklist entry with
+# no recorded rationale -- same pattern as the two above. 453 NCAAF bets had been collected
+# into `bets` with only 1 ever alerted, entirely from this pair being blacklisted (they're
+# the dominant sharp-source books on most cards, same as everywhere else). Re-checked:
+# NoVigApp +17.3% ROI (n=73, 60.3% win), Prophet +8.3% ROI (n=73, 51.4% win), both solidly
+# positive -- no basis found for the block. Data spans Dec 2025-Aug 2026 (last season +
+# this season's early games); revisit once this season's own volume accrues if it decays.
 
 # Prop categories that are structurally negative within specific leagues.
 PROP_CATEGORY_LEAGUE_BLACKLIST = {
@@ -197,9 +205,10 @@ PROP_CATEGORY_LEAGUE_BLACKLIST = {
 # Demoted Polymarket here to reduce weighting influence (-2.8% ROI)
 LOW_CONFIDENCE_BOOKS = {"Kalshi"}
 
-LEAGUE_SHARP_BOOK_SUPPRESS = {
-    "NCAAF":  {"Prophet",  "NoVigApp"},
-}
+# NCAAF entry removed 2026-08-27 (owner-approved) -- see SHARP_BOOK_MARKET_BLACKLIST comment
+# above for the re-check that found it stale. Kept as an empty dict, not deleted, since it's
+# the hook evaluate_sharp_signal() already checks if a league ever needs this again.
+LEAGUE_SHARP_BOOK_SUPPRESS = {}
 
 # Tier Discord descriptions
 def _tier_desc_gold():
@@ -409,27 +418,140 @@ def get_decimal_odds(american_odds):
     if american_odds > 0: return 1 + (american_odds / 100.0)
     return 1 + (100.0 / abs(american_odds))
 
-def exchange_cents_suffix(odds, book):
-    """' (NNc)' showing the cents price equivalent to this American odds (implied
-    probability x 100 -- exchange-style contracts cost that many cents and pay $1/100c if
-    correct). 2026-08-19 (owner request, Kalshi only): Kalshi natively quotes in cents, not
-    American odds, so every system here converting to American odds for display can make the
-    line look like it moved when it hasn't (or vice versa) -- showing both lets the owner
-    cross-check against what the book's own app actually shows before placing.
-    2026-08-25 (owner request): extended to Polymarket/PolymarketUS -- same cents-native
-    pricing, same problem (owner took a PolymarketUS -104 line without realizing what that
-    was in cents). Empty string for any other book or unparseable odds, so it's safe to
-    always append inline."""
-    if not any(k in str(book or '').lower() for k in ('kalshi', 'polymarket')):
-        return ''
-    try:
-        o = float(str(odds).replace('+', '').replace('−', '-'))
-    except (TypeError, ValueError):
-        return ''
+def fair_value_decimal(odds):
+    """2026-09-02 (owner request: "anywhere that says fair value, include it in decimal, ie
+    .60 for 60 cents"). American odds -> implied probability as a bare decimal fraction (no
+    leading 0, e.g. '.60' not '0.60' or '60%'). Same probability math as
+    exchange_cents_suffix() above, just a different display convention for wherever a report/
+    ping shows a "fair odds" number and the owner wants the probability alongside it. Empty
+    string on unparseable/zero odds, so it's always safe to append inline."""
+    odds_s = str(odds).strip()
+    if odds_s.lower() == 'even':
+        o = 100.0
+    else:
+        try:
+            o = float(odds_s.replace('+', '').replace('−', '-'))
+        except (TypeError, ValueError):
+            return ''
     if o == 0:
         return ''
     p = 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0)
-    return f" ({round(p * 100)}¢)"
+    return f"{p:.2f}".lstrip('0')
+
+def cents_to_american(cents):
+    """Inverse of exchange_cents_suffix's cents formula: a 0-100 cents price (implied
+    probability x 100) -> American odds. None if cents is out of (0, 100) range (a
+    contract can't cost $0 or $1+)."""
+    try:
+        c = float(cents)
+    except (TypeError, ValueError):
+        return None
+    if c <= 0 or c >= 100:
+        return None
+    p = c / 100.0
+    if p > 0.5:
+        return round(-100 * p / (1 - p))
+    return round(100 * (1 - p) / p)
+
+# Books that natively price in cents (implied probability x 100) rather than American
+# odds -- see normalize_odds_val() below. 2026-08-27 (owner report): Novig just switched
+# its own app to cents-style pricing ("decimal odds (cents)"), and the owner expects
+# ProphetX to follow -- kept as a set (not just Novig) so a future book flip is a one-line
+# add here, not a new code path.
+CENTS_NATIVE_BOOKS = {'novig', 'novigapp', 'prophet', 'prophetx', 'prophet x',
+                       'kalshi', 'polymarket', 'polymarketus'}
+
+def normalize_odds_val(raw, book):
+    """Best-effort: return proper American odds (float) for a raw odds value that MAY have
+    arrived as a cents/decimal price instead, for a book in CENTS_NATIVE_BOOKS. 2026-08-27
+    (owner report): Novig switched its own app to cents pricing; every integration here reads
+    Novig/exchange prices through a third-party aggregator (Prop Professor, CNO, KeepBetting)
+    that's expected to keep normalizing to American odds on ITS end -- confirmed still doing so
+    live as of this date. This is the defensive backstop for when that normalization breaks or
+    lags (here, or for ProphetX next): American odds are NEVER in (-100, 100) by construction,
+    so any value in that band for a cents-native book is almost certainly a cents price that
+    slipped through unconverted, not a real American odds value.
+
+    Handles: '52¢'/'52c' (explicit cents suffix), 0 < value < 1 (a $/probability fraction,
+    e.g. 0.52), and 1 <= abs(value) < 100 (a bare cents integer, e.g. 52). Values with
+    abs(value) >= 100 are assumed to already be valid American odds and returned unchanged --
+    this function is safe to call unconditionally on every row, not just ones known to be
+    broken (no historical-data cutover needed; already-correct rows round-trip untouched)."""
+    s = str(raw).strip().replace('−', '-')
+    is_cents_book = str(book or '').strip().lower().replace(' ', '') in \
+        {b.replace(' ', '') for b in CENTS_NATIVE_BOOKS}
+    if not is_cents_book:
+        return parse_odds_val(raw)
+    explicit_cents = re.search(r'([\d.]+)\s*[c¢]\b', s, re.IGNORECASE)
+    if explicit_cents:
+        american = cents_to_american(float(explicit_cents.group(1)))
+        return american if american is not None else parse_odds_val(raw)
+    # parse_odds_val's regex only captures the integer part ('0.52' -> 0), which silently
+    # breaks the < 1 fractional-price case below -- parse the raw float ourselves first.
+    float_m = re.search(r'([-+]?\d*\.?\d+)', s)
+    try:
+        val = float(float_m.group(1)) if float_m else 0.0
+    except (TypeError, ValueError):
+        val = 0.0
+    if val == 0:
+        return 0.0
+    if abs(val) >= 100:
+        return val   # already valid American odds
+    # cents prices are inherently unsigned (cost of a contract, 0-100) -- abs() first so a
+    # stray sign on the raw value (shouldn't happen, but seen elsewhere as scraper noise)
+    # doesn't fall through unconverted.
+    cents = abs(val) * 100.0 if 0 < abs(val) < 1 else abs(val)   # 0.52 -> 52, or bare 52 -> 52
+    american = cents_to_american(cents)
+    return american if american is not None else val
+
+# Books whose OWN app shows implied probability instead of American odds, in CENTS
+# specifically ("52c") -- see exchange_cents_suffix() below. Every other book (including
+# traditional sportsbooks with no cents-native app of their own) gets the same number shown
+# as a plain percent instead -- see 2026-08-28 note in the docstring.
+_CENTS_DISPLAY_BOOKS      = ('kalshi', 'polymarket')   # PolymarketUS matches via 'polymarket'
+
+def exchange_cents_suffix(odds, book):
+    """'(NN%)' or '(NNc)' showing this American odds' implied probability, as a
+    self-contained parenthetical with no leading space. Cents specifically for
+    Kalshi/Polymarket (their own app's native display -- same underlying number, just a
+    different symbol). 2026-08-19 (owner request, Kalshi only): Kalshi natively quotes this
+    way, not American odds, so every system here converting to American odds for display can
+    make the line look like it moved when it hasn't (or vice versa) -- showing both lets the
+    owner cross-check against what the book's own app actually shows before placing.
+    2026-08-25: extended to Polymarket/PolymarketUS. 2026-08-27: Novig switched its own app to
+    this same implied-probability display as a percentage. 2026-08-28 (owner request): "I want
+    all american odds to list the cents percentage conversion next to it" -- widened from
+    exchange-only to EVERY book, since the owner wants the probability annotation universally,
+    not just for books that happen to natively quote this way themselves. 2026-08-28 (owner
+    request): "the parentheses [should] be separate ... (+108)(48.1%)" -- previously returned
+    a LEADING-SPACE '(NN%)' meant to be concatenated onto the odds string before the whole
+    thing got wrapped in one more pair of parens by the caller, e.g. "(+108 (48.1%))"; now
+    self-contained with no leading space so callers wrap the odds alone in its own parens and
+    append this directly after, e.g. "(+108)" + "(48.1%)" = "(+108)(48.1%)". Empty string only
+    for unparseable/zero odds, so it's safe to always append inline."""
+    book_l = str(book or '').lower()
+    is_cents = any(k in book_l for k in _CENTS_DISPLAY_BOOKS)
+    odds_s = str(odds).strip()
+    if odds_s.lower() == 'even':
+        # 2026-08-28: pre-existing gap, more visible now that this runs on every book instead
+        # of just a few exchanges -- "EVEN" (used by some books instead of "+100") never
+        # parsed as a float and silently returned ''. Matches parse_odds_val's EVEN->100 rule.
+        o = 100.0
+    else:
+        try:
+            o = float(odds_s.replace('+', '').replace('−', '-'))
+        except (TypeError, ValueError):
+            return ''
+    if o == 0:
+        return ''
+    p = 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0)
+    # 2026-08-28 (owner request): "to the decimal, ie (51.5) if necessary" -- rounding to a
+    # whole number was losing real precision the exchanges themselves show (a book quoting
+    # 51.5c/51.5% isn't the same price as 51 or 52). One decimal place, but only shown when
+    # it's not a whole number, so a clean 52% still prints as "52%" not "52.0%".
+    pct = round(p * 100, 1)
+    pct_s = f"{pct:g}"
+    return f"({pct_s}¢)" if is_cents else f"({pct_s}%)"
 
 def get_odds_bucket(val):
     if val < -750:         return "< -750"
