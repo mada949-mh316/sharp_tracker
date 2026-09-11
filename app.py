@@ -706,6 +706,25 @@ cons_range = st.sidebar.slider("Consensus Books", 1, max_cons, (1, max_cons))
 oc1, oc2   = st.sidebar.columns(2)
 min_odds   = oc1.number_input("Min Odds", value=-200, step=10)
 max_odds   = oc2.number_input("Max Odds", value=200, step=10)
+
+# Arb % is the calculated play-price vs sharp-price gap. Defaults span every
+# observed value so the ordinary tracker view remains unchanged until adjusted.
+HAS_ARB_PCT_SIDEBAR = 'arb_pct' in df.columns and df['arb_pct'].notna().any()
+if HAS_ARB_PCT_SIDEBAR:
+    df['arb_pct'] = pd.to_numeric(df['arb_pct'], errors='coerce')
+    _arb_min = float(np.floor(df['arb_pct'].min() * 10) / 10)
+    _arb_max = float(np.ceil(df['arb_pct'].max() * 10) / 10)
+    if _arb_max <= _arb_min:
+        _arb_max = _arb_min + 0.1
+    st.sidebar.markdown("**Arb % Range**")
+    st.sidebar.caption("Play price vs sharp price. Use 1.0–2.0 for Max Arbs.")
+    ab1, ab2 = st.sidebar.columns(2)
+    min_arb_pct = ab1.number_input("Min Arb %", value=_arb_min, step=0.1,
+                                   format="%.1f", key="min_arb_pct")
+    max_arb_pct = ab2.number_input("Max Arb %", value=_arb_max, step=0.1,
+                                   format="%.1f", key="max_arb_pct")
+else:
+    min_arb_pct, max_arb_pct = -float('inf'), float('inf')
 st.sidebar.markdown("**Time of Day (EDT)**")
 time_range = st.sidebar.slider("Hour range", 0, 23, (9, 21),
     format="%d:00", key="time_range")
@@ -822,6 +841,10 @@ if sel_prop_cats and 'prop_cat' in df_f.columns:
     df_f = df_f[df_f['prop_cat'].isin(sel_prop_cats)]
 df_f = df_f[(df_f['consensus']>=cons_range[0])&(df_f['consensus']<=cons_range[1])]
 df_f = df_f[(df_f['odds_val']>=min_odds)&(df_f['odds_val']<=max_odds)]
+if HAS_ARB_PCT_SIDEBAR and (min_arb_pct > _arb_min or max_arb_pct < _arb_max):
+    df_f = df_f[df_f['arb_pct'].notna()
+                & (df_f['arb_pct'] >= min_arb_pct)
+                & (df_f['arb_pct'] <= max_arb_pct)]
 if HAS_MY_SCORE_SIDEBAR and (min_edge > 0 or max_edge < 100):
     df_f = df_f[df_f['edge_score'].notna() & (df_f['edge_score'] >= min_edge) & (df_f['edge_score'] <= max_edge)]
 if HAS_GEM_SCORE_SIDEBAR and (min_gem > 0.0 or max_gem < 100.0):
