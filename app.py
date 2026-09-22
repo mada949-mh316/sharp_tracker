@@ -631,6 +631,18 @@ if 'profit' in df.columns:
 if 'liquidity' in df.columns:
     df['liquidity'] = pd.to_numeric(df['liquidity'], errors='coerce').fillna(0.0).astype(float)
 
+# Frozen OOS selectors stamp their card-time match into shadow_rule_tag.  Normalize it
+# once at load so both the sidebar quick filter and dedicated OOS tab can use it without
+# re-scoring history (which would leak future model information into the view).
+if 'shadow_rule_tag' not in df.columns:
+    df['shadow_rule_tag'] = ''
+df['shadow_rule_tag'] = df['shadow_rule_tag'].fillna('').astype(str)
+df['oos_model'] = np.select(
+    [df['shadow_rule_tag'].str.contains('ml_oos_normal_shadow_v1', na=False),
+     df['shadow_rule_tag'].str.contains('ml_oos_longshot_shadow_v1', na=False)],
+    ['Normal', 'Longshot'], default=''
+)
+
 # ── Sharp gap (mean sharp implied prob - play implied prob), in percentage points ──
 # Computed here (on the master df, before filtering) so it's available both to the
 # sidebar filter below and to the "What's Working" panel's live backtest.
@@ -665,6 +677,18 @@ preset = st.sidebar.radio("", [
     "Exclude Fanatics","Best Edges (BRONZE + GOLD)","Prop Unders Only",
     "Alerted Bets Only"
 ], label_visibility="collapsed")
+
+# A persistent button is faster than manually finding the shadow tag in the log.
+# It filters the normal dashboard view only; the dedicated OOS tab below always
+# retains both normal and longshot candidates for review.
+if 'oos_only' not in st.session_state:
+    st.session_state['oos_only'] = False
+_oos_button = "🧠 Hide OOS Shadows" if st.session_state['oos_only'] else "🧠 OOS Model Shadows"
+if st.sidebar.button(_oos_button, use_container_width=True):
+    st.session_state['oos_only'] = not st.session_state['oos_only']
+    st.rerun()
+if st.session_state['oos_only']:
+    st.sidebar.caption("OOS quick filter active · card-time frozen model matches only")
 
 st.sidebar.markdown("**Date Range**")
 min_date   = df['timestamp'].min().date()
@@ -825,6 +849,9 @@ elif preset == "Alerted Bets Only":
         df_f = df_f[df_f['alerted'] == True]
     else:
         st.sidebar.warning("No 'alerted' column found in database.")
+
+if st.session_state.get('oos_only'):
+    df_f = df_f[df_f['oos_model'] != '']
 
 # NOTE: the date/time window is applied LAST (see df_cat below) so the date-scoped
 # panels can reuse every other filter without inheriting the sidebar date range.
@@ -1291,11 +1318,11 @@ except Exception as _e:
 # ─────────────────────────────────────────────────────────────
 (tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
  tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post,
- tab_tennis) = st.tabs([
+ tab_tennis, tab_oos) = st.tabs([
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
     "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks",
-    "🎯 Post Score", "🎾 Tennis"
+    "🎯 Post Score", "🎾 Tennis", "🧠 OOS Shadows"
 ])
 
 
@@ -1306,7 +1333,7 @@ with tab_log:
                  'play_selection','bet_side','play_odds','play_book',
                  'primary_sharp','consensus','liquidity','status','profit']
     # Show likely_missed in the log when expired bets are included
-    extra_cols = []
+    extra_cols = ['oos_model'] if 'oos_model' in df_f.columns and (df_f['oos_model'] != '').any() else []
     if status_scope == "All Bets (incl. Expired)" and 'likely_missed' in df_f.columns:
         extra_cols = ['likely_missed']
     if HAS_PLACED and 'placed' in df_f.columns:
@@ -2922,6 +2949,72 @@ with tab_tennis:
                            "obscure lower-tier events). The graded set below is the representative sample.")
     except Exception as _e:
         st.warning(f"Couldn't build the tennis tracker ({_e}).")
+
+
+# ─── OOS MODEL SHADOWS ───────────────────────────────────────
+with tab_oos:
+    st.subheader("🧠 Frozen OOS Model Shadows")
+    st.caption("Only card-time frozen model matches. This view does not re-score historical bets, "
+               "does not change delivery, and intentionally keeps +300 longshots visible.")
+
+    # Use the loaded window and manual date/status scope, but deliberately do not inherit
+    # the normal odds, tier, score, or time controls: those would hide the longshot lane or
+    # rewrite the stated OOS universe.
+    _oos = df[df['oos_model'] != ''].copy()
+    if status_scope == "Exclude Expired":
+        _oos = _oos[_oos['status'] != 'Expired']
+    if len(date_range) == 2:
+        _oos = _oos[(_oos['timestamp'].dt.date >= date_range[0]) &
+                    (_oos['timestamp'].dt.date <= date_range[1])]
+
+    if _oos.empty:
+        st.info("No OOS matches in this data window.")
+    else:
+        _oos_settled = _oos[_oos['status'].isin(['Won', 'Lost', 'Push'])].copy()
+        _oos_profit = _oos_settled['profit'].sum()
+        _oos_n = len(_oos_settled)
+        _oos_roi = (_oos_profit / (_oos_n * UNIT_SIZE) * 100) if _oos_n else 0.0
+        _oos_open = len(_oos) - _oos_n
+        _ow = int((_oos_settled['status'] == 'Won').sum())
+        _ol = int((_oos_settled['status'] == 'Lost').sum())
+        _op = int((_oos_settled['status'] == 'Push').sum())
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _c1.metric("Matched cards", f"{len(_oos):,}")
+        _c2.metric("Settled", f"{_oos_n:,}")
+        _c3.metric("Record", f"{_ow}-{_ol}" + (f"-{_op}P" if _op else ""))
+        _c4.metric("ROI", f"{_oos_roi:+.1f}%", delta=f"{_oos_profit / UNIT_SIZE:+.1f}u · {_oos_open} open")
+
+        if not _oos_settled.empty:
+            _summary = (_oos_settled.groupby(['oos_model', 'league'], dropna=False)
+                        .agg(Bets=('profit', 'count'), Profit=('profit', 'sum'),
+                             Wins=('status', lambda s: (s == 'Won').sum()),
+                             Losses=('status', lambda s: (s == 'Lost').sum()),
+                             Pushes=('status', lambda s: (s == 'Push').sum()))
+                        .reset_index())
+            _summary['Units'] = _summary['Profit'] / UNIT_SIZE
+            _summary['ROI'] = _summary['Profit'] / (_summary['Bets'] * UNIT_SIZE) * 100
+            _summary['Record'] = (_summary['Wins'].astype(int).astype(str) + '-' +
+                                  _summary['Losses'].astype(int).astype(str) +
+                                  np.where(_summary['Pushes'] > 0,
+                                           '-' + _summary['Pushes'].astype(int).astype(str) + 'P', ''))
+            _summary = _summary[['oos_model', 'league', 'Bets', 'Record', 'Units', 'ROI']]
+            _summary = _summary.rename(columns={'oos_model': 'OOS Model', 'league': 'League'})
+            _summary['Units'] = _summary['Units'].map('{:+.1f}'.format)
+            _summary['ROI'] = _summary['ROI'].map('{:+.1f}%'.format)
+            st.markdown("**Performance by model and sport**")
+            st.dataframe(_summary, use_container_width=True, hide_index=True)
+
+        st.markdown("**Matched cards**")
+        _oos_cols = ['timestamp', 'oos_model', 'league', 'matchup', 'market', 'play_selection',
+                     'play_odds', 'play_book', 'status', 'profit', 'shadow_rule_tag']
+        _oos_cols = [c for c in _oos_cols if c in _oos.columns]
+        _oos_display = _oos[_oos_cols].sort_values('timestamp', ascending=False)
+        st.dataframe(_oos_display, use_container_width=True, hide_index=True,
+                     column_config={
+                         'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
+                         'play_odds': st.column_config.NumberColumn('Odds', format='%d'),
+                         'shadow_rule_tag': st.column_config.TextColumn('Frozen tag', width='large'),
+                     })
 
 # ─── DEBUG ────────────────────────────────────────────────────
 with st.expander("🛠️ Debug"):

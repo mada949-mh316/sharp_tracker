@@ -214,6 +214,7 @@ def load_bets(
                play_odds, play_book, sharp_odds, sharp_book,
                liquidity, wager, result, profit, status,
                edge_score, gem_score, smash_score, catboost_score, alerted,
+               shadow_rule_tag,
                twroi, bk_twroi, ewma, true_edge, true_edge_n, placed
         FROM bets
         WHERE {where}
