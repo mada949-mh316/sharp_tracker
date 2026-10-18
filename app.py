@@ -731,6 +731,18 @@ oc1, oc2   = st.sidebar.columns(2)
 min_odds   = oc1.number_input("Min Odds", value=-200, step=10)
 max_odds   = oc2.number_input("Max Odds", value=200, step=10)
 
+HAS_LIQUIDITY_SIDEBAR = 'liquidity' in df.columns and (df['liquidity'] > 0).sum() > 0
+if HAS_LIQUIDITY_SIDEBAR:
+    _liq_max = float(np.ceil(df['liquidity'].max() / 1000.0) * 1000.0) or 1000.0
+    st.sidebar.markdown("**Liquidity Range**")
+    lq1, lq2 = st.sidebar.columns(2)
+    min_liquidity = lq1.number_input("Min Liquidity", value=0.0, min_value=0.0,
+                                      max_value=_liq_max, step=100.0, key="min_liquidity")
+    max_liquidity = lq2.number_input("Max Liquidity", value=_liq_max, min_value=0.0,
+                                      max_value=_liq_max, step=100.0, key="max_liquidity")
+else:
+    min_liquidity, max_liquidity = 0.0, float('inf')
+
 # Arb % is the calculated play-price vs sharp-price gap. Defaults span every
 # observed value so the ordinary tracker view remains unchanged until adjusted.
 HAS_ARB_PCT_SIDEBAR = 'arb_pct' in df.columns and df['arb_pct'].notna().any()
@@ -868,6 +880,8 @@ if sel_prop_cats and 'prop_cat' in df_f.columns:
     df_f = df_f[df_f['prop_cat'].isin(sel_prop_cats)]
 df_f = df_f[(df_f['consensus']>=cons_range[0])&(df_f['consensus']<=cons_range[1])]
 df_f = df_f[(df_f['odds_val']>=min_odds)&(df_f['odds_val']<=max_odds)]
+if HAS_LIQUIDITY_SIDEBAR and (min_liquidity > 0.0 or max_liquidity < _liq_max):
+    df_f = df_f[df_f['liquidity'].notna() & (df_f['liquidity'] >= min_liquidity) & (df_f['liquidity'] <= max_liquidity)]
 if HAS_ARB_PCT_SIDEBAR and (min_arb_pct > _arb_min or max_arb_pct < _arb_max):
     df_f = df_f[df_f['arb_pct'].notna()
                 & (df_f['arb_pct'] >= min_arb_pct)
