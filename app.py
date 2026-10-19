@@ -525,6 +525,23 @@ def _row_sharp_gap(odds_val, sharp_odds_str):
     sis = [_imp_prob(float(n)) for n in nums]; sis = [x for x in sis if x is not None]
     return (sum(sis) / len(sis) - pi) if sis else None
 
+def _row_width_cents(sharp_odds_str):
+    """Owner's American-odds width convention (same as arb_scraper.py's
+    _arb_cents_width / post_grader.py's width-band research): -110/-110 = 20¢,
+    -105/-105 = 10¢; mixed-sign or single-side quotes use the absolute
+    price-magnitude gap (a single quote has no visible opposite side, so it's
+    treated as if both sides matched it, same fallback as gem_edge_score.py)."""
+    nums = re.findall(r'-?\d+\.?\d*', str(sharp_odds_str))
+    if not nums: return None
+    try:
+        lo = float(nums[0])
+        hi = float(nums[1]) if len(nums) > 1 else lo
+    except (TypeError, ValueError):
+        return None
+    if lo < 0 and hi < 0 and lo == hi:
+        return 2 * (abs(lo) - 100)
+    return abs(abs(lo) - abs(hi))
+
 @st.cache_data(ttl=300)
 def compute_post_scores(df_in):
     """Recompute the per-bet Post Score (props 0-4 on DK/Caes/FD, totals 0-3,
@@ -654,6 +671,16 @@ if 'sharp_odds' in df.columns and 'odds_val' in df.columns:
         df['sharp_gap_pct'] = np.nan
 else:
     df['sharp_gap_pct'] = np.nan
+
+# ── Width (¢), owner's -110/-110=20¢ convention -- same metric as the
+# Prediction-Source Width Research report, now filterable here too ──
+if 'sharp_odds' in df.columns:
+    try:
+        df['width_cents'] = pd.to_numeric(df['sharp_odds'].apply(_row_width_cents), errors='coerce')
+    except Exception:
+        df['width_cents'] = np.nan
+else:
+    df['width_cents'] = np.nan
 
 
 # ── Filters ──
@@ -803,6 +830,17 @@ if HAS_SHARP_GAP_SIDEBAR:
 else:
     min_gap, max_gap = -100.0, 100.0
 
+HAS_WIDTH_SIDEBAR = 'width_cents' in df.columns and df['width_cents'].notna().sum() > 0
+if HAS_WIDTH_SIDEBAR:
+    _width_max = float(np.ceil(df['width_cents'].quantile(0.99) / 10.0) * 10.0) or 50.0
+    st.sidebar.markdown("**Width (¢) Range**")
+    st.sidebar.caption("Owner convention: −110/−110 = 20¢. Same metric as the Prediction-Source Width Research report.")
+    wd1, wd2 = st.sidebar.columns(2)
+    min_width = wd1.number_input("Min Width¢", value=0.0, min_value=0.0, step=5.0, key="min_width")
+    max_width = wd2.number_input("Max Width¢", value=_width_max, min_value=0.0, step=5.0, key="max_width")
+else:
+    min_width, max_width = 0.0, float('inf')
+
 HAS_CAT_SCORE_SIDEBAR = 'catboost_score' in df.columns and (df['catboost_score'] > 0).sum() > 0
 if HAS_CAT_SCORE_SIDEBAR:
     st.sidebar.markdown("**CatBoost Score Range**")
@@ -894,6 +932,8 @@ if HAS_SMASH_SCORE_SIDEBAR and (min_smash > 0.0 or max_smash < 100.0):
     df_f = df_f[df_f['smash_score'].notna() & (df_f['smash_score'] >= min_smash) & (df_f['smash_score'] <= max_smash)]
 if HAS_SHARP_GAP_SIDEBAR and (min_gap > -100.0 or max_gap < 100.0):
     df_f = df_f[df_f['sharp_gap_pct'].notna() & (df_f['sharp_gap_pct'] >= min_gap) & (df_f['sharp_gap_pct'] <= max_gap)]
+if HAS_WIDTH_SIDEBAR and (min_width > 0.0 or max_width < _width_max):
+    df_f = df_f[df_f['width_cents'].notna() & (df_f['width_cents'] >= min_width) & (df_f['width_cents'] <= max_width)]
 if HAS_CAT_SCORE_SIDEBAR and (min_cat > 0.0 or max_cat < 100.0):
     df_f = df_f[df_f['catboost_score'].notna() & (df_f['catboost_score'] > 0) & (df_f['catboost_score'] >= min_cat) & (df_f['catboost_score'] <= max_cat)]
 if HAS_TWROI_SIDEBAR and (min_twroi > -100 or max_twroi < 9999):
