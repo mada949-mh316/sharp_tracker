@@ -199,6 +199,51 @@ def fetch_dfs_from_db(days_back: int) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def fetch_crossbook_arb_bets() -> pd.DataFrame:
+    """CNO + Locktopus Phase B cross-book arb signals (cno_signal_shadow +
+    locktopus_signal_shadow), for the owner's own dashboard only -- 2026-10-27 owner
+    request: "add this new cno arb and locktopus data to app.py... so I can still use the
+    UI to see the bets easily." UNLIKE the Discord-facing cards/reports for these two
+    systems (which deliberately hide which source produced a bet), this keeps a `source`
+    column: this is the owner's own analysis tool, where knowing CNO vs Locktopus is
+    useful (e.g. comparing the two, debugging), not something that needs hiding from
+    itself. market_key normalizes market text the same way dm_worker.py's subscriber
+    dedup and post_grader.py's combined report do (extract_prop_category) -- CNO and
+    Locktopus spell the same prop category differently ("Player Threes" vs
+    "Player 3-Pointers"), confirmed live 2026-10-27."""
+    from db_utils import get_conn
+    from shared_logic import categorize_bet, extract_prop_category
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT 'CNO' AS source, observed_at, league, matchup, market, play_selection,
+                   play_odds, play_book, sharp_book, sharp_odds, liquidity, exchange_liquidity,
+                   tier, edge_score, gem_score, smash_score, twroi, bk_twroi, would_alert,
+                   status, profit, graded_at, game_time
+            FROM cno_signal_shadow
+            UNION ALL
+            SELECT 'Locktopus' AS source, observed_at, league, matchup, market, play_selection,
+                   play_odds, play_book, sharp_book, sharp_odds, liquidity, exchange_liquidity,
+                   tier, edge_score, gem_score, smash_score, twroi, bk_twroi, would_alert,
+                   status, profit, graded_at, game_time
+            FROM locktopus_signal_shadow
+            ORDER BY observed_at DESC
+        """, conn)
+    if df.empty:
+        return df
+    df['observed_at'] = pd.to_datetime(df['observed_at'], utc=True).dt.tz_convert('US/Eastern')
+    df['graded_at'] = pd.to_datetime(df['graded_at'], utc=True, errors='coerce').dt.tz_convert('US/Eastern')
+    df['game_time'] = pd.to_datetime(df['game_time'], utc=True, errors='coerce').dt.tz_convert('US/Eastern')
+    df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0.0)
+    df['odds_val'] = pd.to_numeric(
+        df['play_odds'].astype(str).str.extract(r'([+-]?\d+)', expand=False), errors='coerce')
+    df['bet_type'] = df.apply(lambda r: categorize_bet(r['market'], r['play_selection']), axis=1)
+    df['market_key'] = df.apply(
+        lambda r: (extract_prop_category(r['market']) or r['market'])
+                  if r['bet_type'] == 'Player Prop' else r['bet_type'], axis=1)
+    return df
+
+
+@st.cache_data(ttl=300)
 def fetch_dfs_picks() -> pd.DataFrame:
     """Load DFS combo slips from the dfs_picks table."""
     from db_utils import get_conn
@@ -542,6 +587,38 @@ def _row_width_cents(sharp_odds_str):
         return 2 * (abs(lo) - 100)
     return abs(abs(lo) - abs(hi))
 
+_EXCHANGE_NAMES = {'kalshi': 'Kalshi', 'polymarket': 'Polymarket', 'polymarketus': 'Polymarket',
+                   'prophet': 'Prophet', 'novigapp': 'NoVig'}
+
+def _row_exchange_name(sharp_book_str):
+    """Single-exchange name if sharp_book is EXACTLY one of Kalshi/Polymarket/Prophet/NoVig
+    (not a multi-book blend), else None. Mirrors post_grader.py's width-research gate."""
+    raw = str(sharp_book_str or '').strip()
+    if ',' in raw: return None
+    key = re.sub(r'[^a-z0-9]', '', raw.lower())
+    return _EXCHANGE_NAMES.get(key)
+
+def _row_decimal(odds_val):
+    try: o = float(odds_val)
+    except (TypeError, ValueError): return None
+    if o == 0: return None
+    return 1 + o / 100 if o > 0 else 1 + 100 / abs(o)
+
+def _row_devig_ev(odds_val, sharp_odds_str):
+    """Positive-EV gate for the single-exchange devig, same math as post_grader.py's
+    report_prediction_source_width_research: sharp_odds is the exchange's quote for
+    the OPPOSITE side (averaged if a lo/hi range), so fair play-side probability is
+    1 - that average; EV compares it to the target's own decimal payout."""
+    nums = re.findall(r'-?\d+\.?\d*', str(sharp_odds_str))
+    if not nums: return None
+    probs = [_imp_prob(float(n)) for n in nums]
+    probs = [p for p in probs if p is not None]
+    if not probs: return None
+    fair_play_prob = 1 - (sum(probs) / len(probs))
+    d = _row_decimal(odds_val)
+    if d is None: return None
+    return fair_play_prob * d - 1
+
 @st.cache_data(ttl=300)
 def compute_post_scores(df_in):
     """Recompute the per-bet Post Score (props 0-4 on DK/Caes/FD, totals 0-3,
@@ -681,6 +758,22 @@ if 'sharp_odds' in df.columns:
         df['width_cents'] = np.nan
 else:
     df['width_cents'] = np.nan
+
+# ── Single-exchange name + devig EV sign -- lets the Width filter optionally
+# reproduce the Prediction-Source Width Research report's actual gate (single
+# named exchange, positive EV) instead of raw width with no EV restriction ──
+if 'sharp_book' in df.columns:
+    df['exchange_name'] = df['sharp_book'].apply(_row_exchange_name)
+else:
+    df['exchange_name'] = None
+if 'sharp_odds' in df.columns and 'odds_val' in df.columns:
+    try:
+        df['devig_ev'] = df.apply(lambda r: _row_devig_ev(r.get('odds_val'), r.get('sharp_odds', '')), axis=1)
+        df['devig_ev'] = pd.to_numeric(df['devig_ev'], errors='coerce')
+    except Exception:
+        df['devig_ev'] = np.nan
+else:
+    df['devig_ev'] = np.nan
 
 
 # ── Filters ──
@@ -838,8 +931,14 @@ if HAS_WIDTH_SIDEBAR:
     wd1, wd2 = st.sidebar.columns(2)
     min_width = wd1.number_input("Min Width¢", value=0.0, min_value=0.0, step=5.0, key="min_width")
     max_width = wd2.number_input("Max Width¢", value=_width_max, min_value=0.0, step=5.0, key="max_width")
+    exchange_ev_only = st.sidebar.checkbox("Exchange-only, positive EV", value=False, key="exchange_ev_only")
+    st.sidebar.caption("Reproduces the report's actual gate: sharp_book must be a single named "
+                       "exchange (Kalshi/Polymarket/Prophet/NoVig, not a blended multi-book range) "
+                       "AND the devig EV against it must be positive. Off = raw width, any sharp "
+                       "reference, any EV sign (a much broader, differently-selected population).")
 else:
     min_width, max_width = 0.0, float('inf')
+    exchange_ev_only = False
 
 HAS_CAT_SCORE_SIDEBAR = 'catboost_score' in df.columns and (df['catboost_score'] > 0).sum() > 0
 if HAS_CAT_SCORE_SIDEBAR:
@@ -934,6 +1033,8 @@ if HAS_SHARP_GAP_SIDEBAR and (min_gap > -100.0 or max_gap < 100.0):
     df_f = df_f[df_f['sharp_gap_pct'].notna() & (df_f['sharp_gap_pct'] >= min_gap) & (df_f['sharp_gap_pct'] <= max_gap)]
 if HAS_WIDTH_SIDEBAR and (min_width > 0.0 or max_width < _width_max):
     df_f = df_f[df_f['width_cents'].notna() & (df_f['width_cents'] >= min_width) & (df_f['width_cents'] <= max_width)]
+if HAS_WIDTH_SIDEBAR and exchange_ev_only:
+    df_f = df_f[df_f['exchange_name'].notna() & df_f['devig_ev'].notna() & (df_f['devig_ev'] > 0)]
 if HAS_CAT_SCORE_SIDEBAR and (min_cat > 0.0 or max_cat < 100.0):
     df_f = df_f[df_f['catboost_score'].notna() & (df_f['catboost_score'] > 0) & (df_f['catboost_score'] >= min_cat) & (df_f['catboost_score'] <= max_cat)]
 if HAS_TWROI_SIDEBAR and (min_twroi > -100 or max_twroi < 9999):
@@ -1372,11 +1473,11 @@ except Exception as _e:
 # ─────────────────────────────────────────────────────────────
 (tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
  tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post,
- tab_tennis, tab_oos) = st.tabs([
+ tab_tennis, tab_oos, tab_crossbook) = st.tabs([
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
     "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks",
-    "🎯 Post Score", "🎾 Tennis", "🧠 OOS Shadows"
+    "🎯 Post Score", "🎾 Tennis", "🧠 OOS Shadows", "🔀 Cross-Book Arb"
 ])
 
 
@@ -3069,6 +3170,151 @@ with tab_oos:
                          'play_odds': st.column_config.NumberColumn('Odds', format='%d'),
                          'shadow_rule_tag': st.column_config.TextColumn('Frozen tag', width='large'),
                      })
+
+# ─── CROSS-BOOK ARB (CNO + Locktopus) ──────────────────────────
+with tab_crossbook:
+    st.subheader("🔀 Cross-Book Arb Signals")
+    st.caption("CNO + Locktopus Phase B shadow data (cno_signal_shadow / locktopus_signal_shadow). "
+               "Owner-only view -- unlike the Discord cards/reports for these two systems, this keeps "
+               "the Source column, since knowing which one produced a bet is useful here, not something "
+               "to hide. Deliberately does not inherit the sidebar's odds/tier/score controls (those are "
+               "tuned for the main bets table); filters below are local to this tab.")
+
+    try:
+        cb_df = fetch_crossbook_arb_bets()
+    except Exception as e:
+        st.error(f"Could not load cross-book arb data: {e}")
+        cb_df = pd.DataFrame()
+
+    if cb_df.empty:
+        st.info("No CNO/Locktopus arb signals collected yet.")
+    else:
+        if len(date_range) == 2:
+            cb_df = cb_df[(cb_df['observed_at'].dt.date >= date_range[0]) &
+                          (cb_df['observed_at'].dt.date <= date_range[1])]
+
+        # 2026-10-27 (owner request): apply the sidebar's own odds-range (min_odds/
+        # max_odds), Bet Direction (sel_side), and Bet Status Scope controls here too,
+        # same as every other tab that reads from the main bets table -- not treated as
+        # a fully separate universe like tab_oos deliberately is. Everything else below
+        # (Gem/CatBoost/True Edge/EWMA/Width/Arb%/Liquidity/Consensus/etc.) is specific to
+        # the main table's own scoring models and doesn't apply to this data shape.
+        if status_scope == "Exclude Expired":
+            cb_df = cb_df[cb_df['status'] != 'Expired']
+        cb_df = cb_df[(cb_df['odds_val'].isna()) |
+                      ((cb_df['odds_val'] >= min_odds) & (cb_df['odds_val'] <= max_odds))]
+        if sel_side == "Overs Only":
+            cb_df = cb_df[cb_df['play_selection'].str.contains('Over', case=False, na=False)]
+        elif sel_side == "Unders Only":
+            cb_df = cb_df[cb_df['play_selection'].str.contains('Under', case=False, na=False)]
+
+        cb_f1, cb_f2, cb_f3 = st.columns(3)
+        with cb_f1:
+            cb_sources = st.multiselect("Source", ["CNO", "Locktopus"],
+                                        default=["CNO", "Locktopus"], key="cb_source")
+        with cb_f2:
+            cb_leagues = sorted(cb_df['league'].dropna().unique())
+            cb_league_sel = st.multiselect("League", cb_leagues, default=cb_leagues, key="cb_league")
+        with cb_f3:
+            cb_alerted_only = st.checkbox("would_alert only", value=False, key="cb_alerted_only",
+                                          help="Show only bets that cleared the scraper's own tier/TWROI bar, "
+                                               "instead of every collected bet.")
+        st.caption(f"Sidebar filters applied: odds {min_odds} to {max_odds} · "
+                  f"side: {sel_side} · status scope: {status_scope}")
+
+        cb_df = cb_df[cb_df['source'].isin(cb_sources) & cb_df['league'].isin(cb_league_sel)]
+        if cb_alerted_only:
+            cb_df = cb_df[cb_df['would_alert'] == True]
+
+        if cb_df.empty:
+            st.info("No rows match these filters.")
+        else:
+            cb_settled = cb_df[cb_df['status'].isin(['Won', 'Lost', 'Push'])].copy()
+            cb_open = cb_df[~cb_df['status'].isin(['Won', 'Lost', 'Push'])]
+            cb_n = len(cb_settled)
+            cb_w = int((cb_settled['status'] == 'Won').sum())
+            cb_l = int((cb_settled['status'] == 'Lost').sum())
+            cb_p = int((cb_settled['status'] == 'Push').sum())
+            cb_profit = cb_settled['profit'].sum()
+            cb_roi = (cb_profit / (cb_n * UNIT_SIZE) * 100) if cb_n else 0.0
+
+            cm = st.columns(5)
+            cm[0].metric("Total bets", f"{len(cb_df):,}")
+            cm[1].metric("Settled", f"{cb_n:,}")
+            cm[2].metric("Record", f"{cb_w}-{cb_l}" + (f"-{cb_p}P" if cb_p else ""))
+            cm[3].metric("ROI", f"{cb_roi:+.1f}%", delta=f"{cb_profit / UNIT_SIZE:+.1f}u")
+            cm[4].metric("Open", f"{len(cb_open):,}")
+            st.markdown("---")
+
+            def _cb_breakdown(frame, col):
+                rows = []
+                for key, sub in frame.groupby(col, dropna=False):
+                    n = len(sub)
+                    if n == 0:
+                        continue
+                    w = int((sub['status'] == 'Won').sum()); l = int((sub['status'] == 'Lost').sum())
+                    p = int((sub['status'] == 'Push').sum())
+                    profit = sub['profit'].sum()
+                    roi = profit / (n * UNIT_SIZE) * 100
+                    rows.append({col: key, 'N': n, 'Record': f"{w}-{l}" + (f"-{p}P" if p else ""),
+                                'Units': f"{profit / UNIT_SIZE:+.1f}", 'ROI': f"{roi:+.1f}%", '_roi_sort': roi})
+                out = pd.DataFrame(rows)
+                if out.empty:
+                    return out
+                return out.sort_values('_roi_sort', ascending=False).drop(columns=['_roi_sort'])
+
+            cb_left, cb_right = st.columns(2)
+            with cb_left:
+                st.markdown("**By Source**")
+                st.dataframe(_cb_breakdown(cb_settled, 'source'), use_container_width=True, hide_index=True)
+                st.markdown("**By League**")
+                st.dataframe(_cb_breakdown(cb_settled, 'league').head(15), use_container_width=True, hide_index=True)
+            with cb_right:
+                st.markdown("**By Market** (normalized across sources)")
+                st.dataframe(_cb_breakdown(cb_settled, 'market_key').head(15), use_container_width=True, hide_index=True)
+
+            ODDS_BINS = [(-1e9, -200, '≤-200'), (-200, -110, '-200 to -110'), (-110, 110, '-110 to +110'),
+                        (110, 200, '+110 to +200'), (200, 1e9, '+200+')]
+            odds_rows = []
+            for lo, hi, lab in ODDS_BINS:
+                sub = cb_settled[(cb_settled['odds_val'] >= lo) & (cb_settled['odds_val'] < hi)]
+                n = len(sub)
+                if n == 0:
+                    continue
+                w = int((sub['status'] == 'Won').sum()); l = int((sub['status'] == 'Lost').sum())
+                profit = sub['profit'].sum()
+                roi = profit / (n * UNIT_SIZE) * 100
+                odds_rows.append({'Odds range': lab, 'N': n, 'Record': f"{w}-{l}",
+                                  'Units': f"{profit / UNIT_SIZE:+.1f}", 'ROI': f"{roi:+.1f}%"})
+            st.markdown("**By Odds Range**")
+            st.dataframe(pd.DataFrame(odds_rows), use_container_width=True, hide_index=True)
+            st.markdown("---")
+
+            if not cb_settled.empty:
+                st.markdown("**Cumulative P&L (settled bets)**")
+                chart_cb = cb_settled.sort_values('observed_at').copy()
+                chart_cb['cumulative_pnl'] = chart_cb['profit'].cumsum() / UNIT_SIZE
+                fig_cb = px.line(chart_cb, x='observed_at', y='cumulative_pnl',
+                                 labels={'observed_at': '', 'cumulative_pnl': 'Units'},
+                                 color_discrete_sequence=['#1DA462'])
+                fig_cb.update_layout(**LAYOUT, height=280)
+                fig_cb.add_hline(y=0, line_dash='dash', line_color='#30363d')
+                st.plotly_chart(fig_cb, use_container_width=True)
+                st.markdown("---")
+
+            st.markdown("**Bet Log**")
+            cb_cols = ['observed_at', 'source', 'league', 'matchup', 'market', 'play_selection',
+                      'play_odds', 'play_book', 'sharp_book', 'sharp_odds', 'tier', 'edge_score',
+                      'smash_score', 'twroi', 'bk_twroi', 'would_alert', 'status', 'profit']
+            cb_cols = [c for c in cb_cols if c in cb_df.columns]
+            cb_display = cb_df[cb_cols].sort_values('observed_at', ascending=False)
+            st.dataframe(cb_display, use_container_width=True, hide_index=True,
+                        column_config={
+                            'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
+                            'observed_at': st.column_config.DatetimeColumn('Observed', format='MMM D, h:mm a'),
+                            'twroi': st.column_config.NumberColumn('TWROI', format='%.1f%%'),
+                            'bk_twroi': st.column_config.NumberColumn('Book TWROI', format='%.1f%%'),
+                        })
 
 # ─── DEBUG ────────────────────────────────────────────────────
 with st.expander("🛠️ Debug"):
