@@ -811,9 +811,17 @@ if st.session_state['oos_only']:
     st.sidebar.caption("OOS quick filter active · card-time frozen model matches only")
 
 st.sidebar.markdown("**Date Range**")
-min_date   = df['timestamp'].min().date()
-max_date   = df['timestamp'].max().date()
-date_range = st.sidebar.date_input("", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+min_date      = df['timestamp'].min().date()
+_data_max_date = df['timestamp'].max().date()
+# 2026-10-27 (owner report: "I cant update to today (10/27) since I havent had any new
+# tracker bets") -- max_value used to be capped at the main bets table's own last
+# timestamp, so with tracker.py paused (no new PP bets) the widget physically couldn't be
+# dragged past whatever day PP last wrote a row, even though OTHER tabs (Cross-Book Arb:
+# CNO/Locktopus) have their own, still-actively-updating data for today. The selectable
+# ceiling now always includes today; the default START/END still defaults to the bets
+# table's own historical range so existing tabs' default view doesn't change.
+max_date   = max(_data_max_date, datetime.now().date())
+date_range = st.sidebar.date_input("", value=(min_date, _data_max_date), min_value=min_date, max_value=max_date)
 
 st.sidebar.markdown("**Display Metric**")
 metric_mode = st.sidebar.radio("", ["ROI (%)", "Total Profit ($)"], label_visibility="collapsed")
