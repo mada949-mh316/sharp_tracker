@@ -3197,6 +3197,18 @@ with tab_crossbook:
     if cb_df.empty:
         st.info("No CNO/Locktopus arb signals collected yet.")
     else:
+        # 2026-10-27 (owner report: "I set to 10/25 through 10/26 and nothing comes up")
+        # -- root cause: the League multiselect below used to derive its options from
+        # cb_df AFTER the date filter. The sidebar's global date_range defaults to the
+        # MAIN bets table's own span (ending Oct 23, since tracker.py is paused) -- which
+        # doesn't overlap AT ALL with CNO/Locktopus's actual data (starts Oct 24) -- so on
+        # the very first render cb_df was empty, making the League options/default empty
+        # too. Streamlit then locks a multiselect's selection to its first-render value
+        # via its `key` and ignores `default=` on every later rerun -- so once empty,
+        # it stayed empty forever, no matter what date range got picked afterward.
+        # Fixed by computing the League options from the UNFILTERED fetch, once, so the
+        # list is stable and never starts out empty just because of the date window.
+        cb_leagues_all = sorted(cb_df['league'].dropna().unique())
         if len(date_range) == 2:
             cb_df = cb_df[(cb_df['observed_at'].dt.date >= date_range[0]) &
                           (cb_df['observed_at'].dt.date <= date_range[1])]
@@ -3221,8 +3233,7 @@ with tab_crossbook:
             cb_sources = st.multiselect("Source", ["CNO", "Locktopus"],
                                         default=["CNO", "Locktopus"], key="cb_source")
         with cb_f2:
-            cb_leagues = sorted(cb_df['league'].dropna().unique())
-            cb_league_sel = st.multiselect("League", cb_leagues, default=cb_leagues, key="cb_league")
+            cb_league_sel = st.multiselect("League", cb_leagues_all, default=cb_leagues_all, key="cb_league")
         with cb_f3:
             cb_alerted_only = st.checkbox("would_alert only", value=False, key="cb_alerted_only",
                                           help="Show only bets that cleared the scraper's own tier/TWROI bar, "
