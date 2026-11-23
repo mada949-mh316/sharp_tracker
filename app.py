@@ -3254,15 +3254,42 @@ with tab_crossbook:
                                              default=sorted(cb_df['market_key'].dropna().unique()),
                                              key="cb_category")
 
-        cb_f4, cb_f5, cb_f6 = st.columns(3)
-        with cb_f4:
-            cb_odds_lo, cb_odds_hi = st.slider("Odds range", -1000, 1000, (-1000, 1000), key="cb_odds_range")
-        with cb_f5:
-            cb_arb_lo, cb_arb_hi = st.slider("Arb % range", cb_arb_min_data, cb_arb_max_data,
-                                             (cb_arb_min_data, cb_arb_max_data), step=0.1, key="cb_arb_range")
-        with cb_f6:
-            cb_liq_lo, cb_liq_hi = st.slider("Liquidity range ($)", 0.0, cb_liq_max_data,
-                                             (0.0, cb_liq_max_data), step=50.0, key="cb_liq_range")
+        # Owner request 2026-11-23 ("free form boxes i can write in instead of
+        # dragging sliders. also add market twroi and book twroi"): every range
+        # control below is a pair of number_input boxes (type a value, not drag),
+        # same min/max-pair shape as the main sidebar's own TWROI Filter uses.
+        # twroi is this feed's own market-level signal strength (see
+        # fetch_crossbook_arb_bets()'s SELECT -- same column the main bets table's
+        # sidebar TWROI filter uses); bk_twroi is the book-specific version.
+        cb_twroi_min_data = float(np.floor(cb_df['twroi'].min())) if cb_df['twroi'].notna().any() else -50.0
+        cb_twroi_max_data = float(np.ceil(cb_df['twroi'].max())) if cb_df['twroi'].notna().any() else 50.0
+        cb_bktwroi_min_data = float(np.floor(cb_df['bk_twroi'].min())) if cb_df['bk_twroi'].notna().any() else -50.0
+        cb_bktwroi_max_data = float(np.ceil(cb_df['bk_twroi'].max())) if cb_df['bk_twroi'].notna().any() else 50.0
+
+        st.markdown("**Odds range**")
+        cb_f4a, cb_f4b = st.columns(2)
+        cb_odds_lo = cb_f4a.number_input("Min odds", value=-1000, step=10, key="cb_odds_lo")
+        cb_odds_hi = cb_f4b.number_input("Max odds", value=1000, step=10, key="cb_odds_hi")
+
+        st.markdown("**Arb % range**")
+        cb_f5a, cb_f5b = st.columns(2)
+        cb_arb_lo = cb_f5a.number_input("Min arb %", value=cb_arb_min_data, step=0.1, format="%.1f", key="cb_arb_lo")
+        cb_arb_hi = cb_f5b.number_input("Max arb %", value=cb_arb_max_data, step=0.1, format="%.1f", key="cb_arb_hi")
+
+        st.markdown("**Liquidity range ($)**")
+        cb_f6a, cb_f6b = st.columns(2)
+        cb_liq_lo = cb_f6a.number_input("Min liquidity", value=0.0, step=50.0, key="cb_liq_lo")
+        cb_liq_hi = cb_f6b.number_input("Max liquidity", value=cb_liq_max_data, step=50.0, key="cb_liq_hi")
+
+        st.markdown("**Market TWROI range (%)**")
+        cb_f9a, cb_f9b = st.columns(2)
+        cb_twroi_lo = cb_f9a.number_input("Min market TWROI", value=cb_twroi_min_data, step=1.0, key="cb_twroi_lo")
+        cb_twroi_hi = cb_f9b.number_input("Max market TWROI", value=cb_twroi_max_data, step=1.0, key="cb_twroi_hi")
+
+        st.markdown("**Book TWROI range (%)**")
+        cb_f10a, cb_f10b = st.columns(2)
+        cb_bktwroi_lo = cb_f10a.number_input("Min book TWROI", value=cb_bktwroi_min_data, step=1.0, key="cb_bktwroi_lo")
+        cb_bktwroi_hi = cb_f10b.number_input("Max book TWROI", value=cb_bktwroi_max_data, step=1.0, key="cb_bktwroi_hi")
 
         cb_f7, cb_f8 = st.columns(2)
         with cb_f7:
@@ -3285,6 +3312,10 @@ with tab_crossbook:
         cb_df = cb_df[(cb_df['liquidity'].fillna(0) >= cb_liq_lo) & (cb_df['liquidity'].fillna(0) <= cb_liq_hi) |
                       (cb_df['exchange_liquidity'].fillna(0) >= cb_liq_lo) &
                       (cb_df['exchange_liquidity'].fillna(0) <= cb_liq_hi)]
+        cb_df = cb_df[(cb_df['twroi'].isna()) |
+                      ((cb_df['twroi'] >= cb_twroi_lo) & (cb_df['twroi'] <= cb_twroi_hi))]
+        cb_df = cb_df[(cb_df['bk_twroi'].isna()) |
+                      ((cb_df['bk_twroi'] >= cb_bktwroi_lo) & (cb_df['bk_twroi'] <= cb_bktwroi_hi))]
 
         cb_df = cb_df[cb_df['source'].isin(cb_sources) & cb_df['league'].isin(cb_league_sel)
                       & cb_df['market_key'].isin(cb_category_sel)]
