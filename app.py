@@ -1479,14 +1479,145 @@ except Exception as _e:
 # ─────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────
-(tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
+(tab_pparb, tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
  tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post,
  tab_tennis, tab_oos, tab_crossbook) = st.tabs([
+    "💰 PP Arb Picks",
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
     "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks",
     "🎯 Post Score", "🎾 Tennis", "🧠 OOS Shadows", "🔀 Cross-Book Arb"
 ])
+
+
+# ─── PP ARB PICKS ───────────────────────────────────────────
+# Owner request 2026-11-23: "im not seeing the arb picks easily in app.py. i want
+# to save all the other information from prop professor but the focus should be
+# the arb pics and their performance." Prop Professor's arb_pct (play price vs
+# sharp price gap -- same calculate_arb_percent metric the sidebar's existing
+# "Arb % Range" filter already uses, see HAS_ARB_PCT_SIDEBAR below) was previously
+# just one of a dozen obscure sidebar sliders with no dedicated view of its own.
+# This is the first tab now, with its own performance breakdown by arb band/sharp
+# book/league/market -- every other tab (Tier Performance, Prop Breakdown, etc.)
+# is untouched and still covers all of Prop Professor's data, arb or not.
+with tab_pparb:
+    st.subheader("💰 PP Arb Picks")
+    st.caption("Prop Professor's own arb picks -- play price vs sharp price gap (arb_pct), "
+               "same metric as the sidebar's \"Arb % Range\" filter, surfaced here as its own "
+               "focused view instead of one slider among many. Inherits the sidebar's normal "
+               "filters (date range, status scope, odds, tier, etc.); the slider below narrows "
+               "further, scoped to just this tab.")
+
+    if not HAS_ARB_PCT_SIDEBAR:
+        st.info("No arb_pct data available in the current window.")
+    else:
+        _pa_floor = float(min(_arb_min, 0.0))
+        _pa_ceiling = float(max(_arb_max, 2.0))
+        pa_min, pa_max = st.slider(
+            "Arb % threshold", min_value=_pa_floor, max_value=_pa_ceiling,
+            value=(1.0, _pa_ceiling), step=0.1, key="pparb_threshold",
+            help="1.0-2.0 is Prop Professor's own 'Max Arb' band (per the sidebar's own "
+                 "caption); above 2.0 is the 'hot' MAX ARB alert threshold used in Discord.")
+        pa_df = df_f[(df_f['arb_pct'] >= pa_min) & (df_f['arb_pct'] <= pa_max)].copy()
+        st.caption(f"{len(pa_df):,} bets currently match Arb % {pa_min:.1f}-{pa_max:.1f} "
+                   f"under the active sidebar filters.")
+
+        if pa_df.empty:
+            st.info("No bets match this Arb % range with the current sidebar filters.")
+        else:
+            pa_settled = pa_df[pa_df['status'].isin(['Won', 'Lost', 'Push'])].copy()
+            pa_open = pa_df[~pa_df['status'].isin(['Won', 'Lost', 'Push'])]
+            pa_n = len(pa_settled)
+            pa_w = int((pa_settled['status'] == 'Won').sum())
+            pa_l = int((pa_settled['status'] == 'Lost').sum())
+            pa_p = int((pa_settled['status'] == 'Push').sum())
+            pa_profit = pa_settled['profit'].sum()
+            pa_roi = (pa_profit / (pa_n * UNIT_SIZE) * 100) if pa_n else 0.0
+
+            pm = st.columns(5)
+            pm[0].metric("Total picks", f"{len(pa_df):,}")
+            pm[1].metric("Settled", f"{pa_n:,}")
+            pm[2].metric("Record", f"{pa_w}-{pa_l}" + (f"-{pa_p}P" if pa_p else ""))
+            pm[3].metric("ROI", f"{pa_roi:+.1f}%", delta=f"{pa_profit / UNIT_SIZE:+.1f}u")
+            pm[4].metric("Open", f"{len(pa_open):,}")
+            st.markdown("---")
+
+            def _pa_breakdown(frame, col):
+                rows = []
+                for key, sub in frame.groupby(col, dropna=False):
+                    n = len(sub)
+                    if n == 0:
+                        continue
+                    w = int((sub['status'] == 'Won').sum()); l = int((sub['status'] == 'Lost').sum())
+                    p = int((sub['status'] == 'Push').sum())
+                    profit = sub['profit'].sum()
+                    roi = profit / (n * UNIT_SIZE) * 100
+                    rows.append({col: key, 'N': n, 'Record': f"{w}-{l}" + (f"-{p}P" if p else ""),
+                                'Units': f"{profit / UNIT_SIZE:+.1f}", 'ROI': f"{roi:+.1f}%", '_roi_sort': roi})
+                out = pd.DataFrame(rows)
+                if out.empty:
+                    return out
+                return out.sort_values('_roi_sort', ascending=False).drop(columns=['_roi_sort'])
+
+            ARB_BANDS = [(-1e9, 1.0, '<1.0% (below Max Arb)'), (1.0, 2.0, '1.0-2.0% (Max Arb)'),
+                         (2.0, 1e9, '2.0%+ (Hot)')]
+            band_rows = []
+            for lo, hi, lab in ARB_BANDS:
+                sub = pa_settled[(pa_settled['arb_pct'] >= lo) & (pa_settled['arb_pct'] < hi)]
+                n = len(sub)
+                if n == 0:
+                    continue
+                w = int((sub['status'] == 'Won').sum()); l = int((sub['status'] == 'Lost').sum())
+                profit = sub['profit'].sum()
+                roi = profit / (n * UNIT_SIZE) * 100
+                band_rows.append({'Arb % band': lab, 'N': n, 'Record': f"{w}-{l}",
+                                  'Units': f"{profit / UNIT_SIZE:+.1f}", 'ROI': f"{roi:+.1f}%"})
+
+            pa_left, pa_right = st.columns(2)
+            with pa_left:
+                st.markdown("**By Arb % Band**")
+                st.dataframe(pd.DataFrame(band_rows), use_container_width=True, hide_index=True)
+                if 'primary_sharp' in pa_settled.columns:
+                    st.markdown("**By Sharp Book**")
+                    st.dataframe(_pa_breakdown(pa_settled, 'primary_sharp').head(15),
+                                use_container_width=True, hide_index=True)
+            with pa_right:
+                st.markdown("**By League**")
+                st.dataframe(_pa_breakdown(pa_settled, 'league').head(15),
+                            use_container_width=True, hide_index=True)
+                _pa_market_col = 'prop_cat' if 'prop_cat' in pa_settled.columns else 'bet_type'
+                if _pa_market_col in pa_settled.columns:
+                    st.markdown("**By Market**")
+                    st.dataframe(_pa_breakdown(pa_settled, _pa_market_col).head(15),
+                                use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            if not pa_settled.empty:
+                st.markdown("**Cumulative P&L (settled arb picks)**")
+                chart_pa = pa_settled.sort_values('timestamp').copy()
+                chart_pa['cumulative_pnl'] = chart_pa['profit'].cumsum() / UNIT_SIZE
+                fig_pa = px.line(chart_pa, x='timestamp', y='cumulative_pnl',
+                                 labels={'timestamp': '', 'cumulative_pnl': 'Units'},
+                                 color_discrete_sequence=['#f5a623'])
+                fig_pa.update_layout(**LAYOUT, height=280)
+                fig_pa.add_hline(y=0, line_dash='dash', line_color='#30363d')
+                st.plotly_chart(fig_pa, use_container_width=True)
+                st.markdown("---")
+
+            st.markdown("**Pick Log**")
+            pa_cols = ['timestamp', 'league', 'matchup', 'bet_type', 'prop_cat', 'play_selection',
+                      'play_odds', 'play_book', 'primary_sharp', 'arb_pct', 'tier', 'twroi',
+                      'bk_twroi', 'status', 'profit']
+            pa_cols = [c for c in pa_cols if c in pa_df.columns]
+            pa_display = pa_df[pa_cols].sort_values('timestamp', ascending=False)
+            st.dataframe(pa_display, use_container_width=True, hide_index=True,
+                        column_config={
+                            'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
+                            'timestamp': st.column_config.DatetimeColumn('Time', format='MMM D, h:mm a'),
+                            'arb_pct': st.column_config.NumberColumn('Arb %', format='%.2f%%'),
+                            'twroi': st.column_config.NumberColumn('TWROI', format='%.1f%%'),
+                            'bk_twroi': st.column_config.NumberColumn('Book TWROI', format='%.1f%%'),
+                        })
 
 
 # ─── LIVE LOG ───────────────────────────────────────────────
