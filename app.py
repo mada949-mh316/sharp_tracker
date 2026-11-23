@@ -1479,145 +1479,15 @@ except Exception as _e:
 # ─────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────
-(tab_pparb, tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
+(tab_crossbook, tab_log, tab_tier, tab_analysis, tab_props, tab_odds,
  tab_rolling, tab_leaderboard, tab_sharps, tab_edge, tab_sim, tab_parlays, tab_dfs, tab_post,
- tab_tennis, tab_oos, tab_crossbook) = st.tabs([
-    "💰 PP Arb Picks",
+ tab_tennis, tab_oos) = st.tabs([
+    "🔀 CNO + Locktopus Arb",
     "📊 Live Log","💎 Tier Performance","📈 Deep Dive",
     "🏀 Prop Breakdown","🎲 Odds Analysis","📉 Rolling ROI",
     "🏆 Leaderboard","🤝 Sharp Agreement","🎯 Edge Scores", "🧪 Simulator", "🎰 Parlays", "🎯 DFS Picks",
-    "🎯 Post Score", "🎾 Tennis", "🧠 OOS Shadows", "🔀 Cross-Book Arb"
+    "🎯 Post Score", "🎾 Tennis", "🧠 OOS Shadows"
 ])
-
-
-# ─── PP ARB PICKS ───────────────────────────────────────────
-# Owner request 2026-11-23: "im not seeing the arb picks easily in app.py. i want
-# to save all the other information from prop professor but the focus should be
-# the arb pics and their performance." Prop Professor's arb_pct (play price vs
-# sharp price gap -- same calculate_arb_percent metric the sidebar's existing
-# "Arb % Range" filter already uses, see HAS_ARB_PCT_SIDEBAR below) was previously
-# just one of a dozen obscure sidebar sliders with no dedicated view of its own.
-# This is the first tab now, with its own performance breakdown by arb band/sharp
-# book/league/market -- every other tab (Tier Performance, Prop Breakdown, etc.)
-# is untouched and still covers all of Prop Professor's data, arb or not.
-with tab_pparb:
-    st.subheader("💰 PP Arb Picks")
-    st.caption("Prop Professor's own arb picks -- play price vs sharp price gap (arb_pct), "
-               "same metric as the sidebar's \"Arb % Range\" filter, surfaced here as its own "
-               "focused view instead of one slider among many. Inherits the sidebar's normal "
-               "filters (date range, status scope, odds, tier, etc.); the slider below narrows "
-               "further, scoped to just this tab.")
-
-    if not HAS_ARB_PCT_SIDEBAR:
-        st.info("No arb_pct data available in the current window.")
-    else:
-        _pa_floor = float(min(_arb_min, 0.0))
-        _pa_ceiling = float(max(_arb_max, 2.0))
-        pa_min, pa_max = st.slider(
-            "Arb % threshold", min_value=_pa_floor, max_value=_pa_ceiling,
-            value=(1.0, _pa_ceiling), step=0.1, key="pparb_threshold",
-            help="1.0-2.0 is Prop Professor's own 'Max Arb' band (per the sidebar's own "
-                 "caption); above 2.0 is the 'hot' MAX ARB alert threshold used in Discord.")
-        pa_df = df_f[(df_f['arb_pct'] >= pa_min) & (df_f['arb_pct'] <= pa_max)].copy()
-        st.caption(f"{len(pa_df):,} bets currently match Arb % {pa_min:.1f}-{pa_max:.1f} "
-                   f"under the active sidebar filters.")
-
-        if pa_df.empty:
-            st.info("No bets match this Arb % range with the current sidebar filters.")
-        else:
-            pa_settled = pa_df[pa_df['status'].isin(['Won', 'Lost', 'Push'])].copy()
-            pa_open = pa_df[~pa_df['status'].isin(['Won', 'Lost', 'Push'])]
-            pa_n = len(pa_settled)
-            pa_w = int((pa_settled['status'] == 'Won').sum())
-            pa_l = int((pa_settled['status'] == 'Lost').sum())
-            pa_p = int((pa_settled['status'] == 'Push').sum())
-            pa_profit = pa_settled['profit'].sum()
-            pa_roi = (pa_profit / (pa_n * UNIT_SIZE) * 100) if pa_n else 0.0
-
-            pm = st.columns(5)
-            pm[0].metric("Total picks", f"{len(pa_df):,}")
-            pm[1].metric("Settled", f"{pa_n:,}")
-            pm[2].metric("Record", f"{pa_w}-{pa_l}" + (f"-{pa_p}P" if pa_p else ""))
-            pm[3].metric("ROI", f"{pa_roi:+.1f}%", delta=f"{pa_profit / UNIT_SIZE:+.1f}u")
-            pm[4].metric("Open", f"{len(pa_open):,}")
-            st.markdown("---")
-
-            def _pa_breakdown(frame, col):
-                rows = []
-                for key, sub in frame.groupby(col, dropna=False):
-                    n = len(sub)
-                    if n == 0:
-                        continue
-                    w = int((sub['status'] == 'Won').sum()); l = int((sub['status'] == 'Lost').sum())
-                    p = int((sub['status'] == 'Push').sum())
-                    profit = sub['profit'].sum()
-                    roi = profit / (n * UNIT_SIZE) * 100
-                    rows.append({col: key, 'N': n, 'Record': f"{w}-{l}" + (f"-{p}P" if p else ""),
-                                'Units': f"{profit / UNIT_SIZE:+.1f}", 'ROI': f"{roi:+.1f}%", '_roi_sort': roi})
-                out = pd.DataFrame(rows)
-                if out.empty:
-                    return out
-                return out.sort_values('_roi_sort', ascending=False).drop(columns=['_roi_sort'])
-
-            ARB_BANDS = [(-1e9, 1.0, '<1.0% (below Max Arb)'), (1.0, 2.0, '1.0-2.0% (Max Arb)'),
-                         (2.0, 1e9, '2.0%+ (Hot)')]
-            band_rows = []
-            for lo, hi, lab in ARB_BANDS:
-                sub = pa_settled[(pa_settled['arb_pct'] >= lo) & (pa_settled['arb_pct'] < hi)]
-                n = len(sub)
-                if n == 0:
-                    continue
-                w = int((sub['status'] == 'Won').sum()); l = int((sub['status'] == 'Lost').sum())
-                profit = sub['profit'].sum()
-                roi = profit / (n * UNIT_SIZE) * 100
-                band_rows.append({'Arb % band': lab, 'N': n, 'Record': f"{w}-{l}",
-                                  'Units': f"{profit / UNIT_SIZE:+.1f}", 'ROI': f"{roi:+.1f}%"})
-
-            pa_left, pa_right = st.columns(2)
-            with pa_left:
-                st.markdown("**By Arb % Band**")
-                st.dataframe(pd.DataFrame(band_rows), use_container_width=True, hide_index=True)
-                if 'primary_sharp' in pa_settled.columns:
-                    st.markdown("**By Sharp Book**")
-                    st.dataframe(_pa_breakdown(pa_settled, 'primary_sharp').head(15),
-                                use_container_width=True, hide_index=True)
-            with pa_right:
-                st.markdown("**By League**")
-                st.dataframe(_pa_breakdown(pa_settled, 'league').head(15),
-                            use_container_width=True, hide_index=True)
-                _pa_market_col = 'prop_cat' if 'prop_cat' in pa_settled.columns else 'bet_type'
-                if _pa_market_col in pa_settled.columns:
-                    st.markdown("**By Market**")
-                    st.dataframe(_pa_breakdown(pa_settled, _pa_market_col).head(15),
-                                use_container_width=True, hide_index=True)
-
-            st.markdown("---")
-            if not pa_settled.empty:
-                st.markdown("**Cumulative P&L (settled arb picks)**")
-                chart_pa = pa_settled.sort_values('timestamp').copy()
-                chart_pa['cumulative_pnl'] = chart_pa['profit'].cumsum() / UNIT_SIZE
-                fig_pa = px.line(chart_pa, x='timestamp', y='cumulative_pnl',
-                                 labels={'timestamp': '', 'cumulative_pnl': 'Units'},
-                                 color_discrete_sequence=['#f5a623'])
-                fig_pa.update_layout(**LAYOUT, height=280)
-                fig_pa.add_hline(y=0, line_dash='dash', line_color='#30363d')
-                st.plotly_chart(fig_pa, use_container_width=True)
-                st.markdown("---")
-
-            st.markdown("**Pick Log**")
-            pa_cols = ['timestamp', 'league', 'matchup', 'bet_type', 'prop_cat', 'play_selection',
-                      'play_odds', 'play_book', 'primary_sharp', 'arb_pct', 'tier', 'twroi',
-                      'bk_twroi', 'status', 'profit']
-            pa_cols = [c for c in pa_cols if c in pa_df.columns]
-            pa_display = pa_df[pa_cols].sort_values('timestamp', ascending=False)
-            st.dataframe(pa_display, use_container_width=True, hide_index=True,
-                        column_config={
-                            'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
-                            'timestamp': st.column_config.DatetimeColumn('Time', format='MMM D, h:mm a'),
-                            'arb_pct': st.column_config.NumberColumn('Arb %', format='%.2f%%'),
-                            'twroi': st.column_config.NumberColumn('TWROI', format='%.1f%%'),
-                            'bk_twroi': st.column_config.NumberColumn('Book TWROI', format='%.1f%%'),
-                        })
 
 
 # ─── LIVE LOG ───────────────────────────────────────────────
@@ -3312,12 +3182,13 @@ with tab_oos:
 
 # ─── CROSS-BOOK ARB (CNO + Locktopus) ──────────────────────────
 with tab_crossbook:
-    st.subheader("🔀 Cross-Book Arb Signals")
+    st.subheader("🔀 CNO + Locktopus Arb Picks")
     st.caption("CNO + Locktopus Phase B shadow data (cno_signal_shadow / locktopus_signal_shadow). "
                "Owner-only view -- unlike the Discord cards/reports for these two systems, this keeps "
                "the Source column, since knowing which one produced a bet is useful here, not something "
-               "to hide. Deliberately does not inherit the sidebar's odds/tier/score controls (those are "
-               "tuned for the main bets table); filters below are local to this tab.")
+               "to hide. Owner request 2026-11-23: fully local controls (date, arb %, liquidity, "
+               "category) instead of inheriting the sidebar's -- those are tuned for the main bets "
+               "table/PP's own date span, which doesn't track this feed's own data.")
 
     try:
         cb_df = fetch_crossbook_arb_bets()
@@ -3328,36 +3199,49 @@ with tab_crossbook:
     if cb_df.empty:
         st.info("No CNO/Locktopus arb signals collected yet.")
     else:
+        # Owner request 2026-11-23 ("I want to be able to control them too -- date,
+        # arb %, liquidity, category"): arb_pct uses the SAME calculate_arb_percent
+        # metric the sidebar's main "Arb % Range" filter uses on the bets table,
+        # just computed here on this feed's own play_odds/sharp_odds (it has no
+        # arb_pct column of its own -- cno_signal_shadow/locktopus_signal_shadow
+        # store edge_score/twroi instead, a different model's metric).
+        cb_df['arb_pct'] = cb_df.apply(
+            lambda r: calculate_arb_percent(r['play_odds'], r['sharp_odds']), axis=1)
+
         # 2026-10-27 (owner report: "I set to 10/25 through 10/26 and nothing comes up")
         # -- root cause: the League multiselect below used to derive its options from
         # cb_df AFTER the date filter. The sidebar's global date_range defaults to the
-        # MAIN bets table's own span (ending Oct 23, since tracker.py is paused) -- which
-        # doesn't overlap AT ALL with CNO/Locktopus's actual data (starts Oct 24) -- so on
-        # the very first render cb_df was empty, making the League options/default empty
-        # too. Streamlit then locks a multiselect's selection to its first-render value
-        # via its `key` and ignores `default=` on every later rerun -- so once empty,
-        # it stayed empty forever, no matter what date range got picked afterward.
-        # Fixed by computing the League options from the UNFILTERED fetch, once, so the
-        # list is stable and never starts out empty just because of the date window.
+        # MAIN bets table's own span (PP's, which can be stale for days) -- which
+        # doesn't track this feed's own fresher data at all -- so on the very first
+        # render cb_df could be empty, making the League options/default empty too.
+        # Streamlit then locks a multiselect's selection to its first-render value via
+        # its `key` and ignores `default=` on every later rerun -- so once empty, it
+        # stayed empty forever. Fixed two ways: League options are computed from the
+        # UNFILTERED fetch once (stable, never starts empty), and 2026-11-23 the date
+        # control itself became fully local to this tab -- no more silent dependency
+        # on the sidebar's PP-anchored default ever hiding today's CNO/Locktopus rows.
         cb_leagues_all = sorted(cb_df['league'].dropna().unique())
-        if len(date_range) == 2:
-            cb_df = cb_df[(cb_df['observed_at'].dt.date >= date_range[0]) &
-                          (cb_df['observed_at'].dt.date <= date_range[1])]
+        cb_min_date = cb_df['observed_at'].min().date()
+        cb_max_date = max(cb_df['observed_at'].max().date(), datetime.now().date())
 
-        # 2026-10-27 (owner request): apply the sidebar's own odds-range (min_odds/
-        # max_odds), Bet Direction (sel_side), and Bet Status Scope controls here too,
-        # same as every other tab that reads from the main bets table -- not treated as
-        # a fully separate universe like tab_oos deliberately is. Everything else below
-        # (Gem/CatBoost/True Edge/EWMA/Width/Arb%/Liquidity/Consensus/etc.) is specific to
-        # the main table's own scoring models and doesn't apply to this data shape.
-        if status_scope == "Exclude Expired":
-            cb_df = cb_df[cb_df['status'] != 'Expired']
-        cb_df = cb_df[(cb_df['odds_val'].isna()) |
-                      ((cb_df['odds_val'] >= min_odds) & (cb_df['odds_val'] <= max_odds))]
-        if sel_side == "Overs Only":
-            cb_df = cb_df[cb_df['play_selection'].str.contains('Over', case=False, na=False)]
-        elif sel_side == "Unders Only":
-            cb_df = cb_df[cb_df['play_selection'].str.contains('Under', case=False, na=False)]
+        cb_d1, cb_d2 = st.columns(2)
+        with cb_d1:
+            cb_date_range = st.date_input("Date range", value=(cb_min_date, cb_max_date),
+                                          min_value=cb_min_date, max_value=cb_max_date, key="cb_date_range")
+        with cb_d2:
+            cb_alerted_only = st.checkbox("would_alert only", value=False, key="cb_alerted_only",
+                                          help="Show only bets that cleared the scraper's own tier/TWROI bar, "
+                                               "instead of every collected bet.")
+        if len(cb_date_range) == 2:
+            cb_df = cb_df[(cb_df['observed_at'].dt.date >= cb_date_range[0]) &
+                          (cb_df['observed_at'].dt.date <= cb_date_range[1])]
+
+        cb_arb_min_data = float(np.floor((cb_df['arb_pct'].min() if cb_df['arb_pct'].notna().any() else 0.0)))
+        cb_arb_max_data = float(np.ceil((cb_df['arb_pct'].max() if cb_df['arb_pct'].notna().any() else 5.0)))
+        if cb_arb_max_data <= cb_arb_min_data:
+            cb_arb_max_data = cb_arb_min_data + 1.0
+        cb_liq_max_data = float(np.ceil(
+            pd.concat([cb_df['liquidity'], cb_df['exchange_liquidity']]).max() or 1000.0))
 
         cb_f1, cb_f2, cb_f3 = st.columns(3)
         with cb_f1:
@@ -3366,13 +3250,44 @@ with tab_crossbook:
         with cb_f2:
             cb_league_sel = st.multiselect("League", cb_leagues_all, default=cb_leagues_all, key="cb_league")
         with cb_f3:
-            cb_alerted_only = st.checkbox("would_alert only", value=False, key="cb_alerted_only",
-                                          help="Show only bets that cleared the scraper's own tier/TWROI bar, "
-                                               "instead of every collected bet.")
-        st.caption(f"Sidebar filters applied: odds {min_odds} to {max_odds} · "
-                  f"side: {sel_side} · status scope: {status_scope}")
+            cb_category_sel = st.multiselect("Category", sorted(cb_df['market_key'].dropna().unique()),
+                                             default=sorted(cb_df['market_key'].dropna().unique()),
+                                             key="cb_category")
 
-        cb_df = cb_df[cb_df['source'].isin(cb_sources) & cb_df['league'].isin(cb_league_sel)]
+        cb_f4, cb_f5, cb_f6 = st.columns(3)
+        with cb_f4:
+            cb_odds_lo, cb_odds_hi = st.slider("Odds range", -1000, 1000, (-1000, 1000), key="cb_odds_range")
+        with cb_f5:
+            cb_arb_lo, cb_arb_hi = st.slider("Arb % range", cb_arb_min_data, cb_arb_max_data,
+                                             (cb_arb_min_data, cb_arb_max_data), step=0.1, key="cb_arb_range")
+        with cb_f6:
+            cb_liq_lo, cb_liq_hi = st.slider("Liquidity range ($)", 0.0, cb_liq_max_data,
+                                             (0.0, cb_liq_max_data), step=50.0, key="cb_liq_range")
+
+        cb_f7, cb_f8 = st.columns(2)
+        with cb_f7:
+            cb_side_sel = st.radio("Bet Direction", ["Both", "Overs Only", "Unders Only"],
+                                   horizontal=True, key="cb_side")
+        with cb_f8:
+            cb_status_sel = st.radio("Status scope", ["Exclude Expired", "All Bets (incl. Expired)"],
+                                     horizontal=True, key="cb_status_scope")
+
+        if cb_status_sel == "Exclude Expired":
+            cb_df = cb_df[cb_df['status'] != 'Expired']
+        cb_df = cb_df[(cb_df['odds_val'].isna()) |
+                      ((cb_df['odds_val'] >= cb_odds_lo) & (cb_df['odds_val'] <= cb_odds_hi))]
+        if cb_side_sel == "Overs Only":
+            cb_df = cb_df[cb_df['play_selection'].str.contains('Over', case=False, na=False)]
+        elif cb_side_sel == "Unders Only":
+            cb_df = cb_df[cb_df['play_selection'].str.contains('Under', case=False, na=False)]
+        cb_df = cb_df[(cb_df['arb_pct'].isna()) |
+                      ((cb_df['arb_pct'] >= cb_arb_lo) & (cb_df['arb_pct'] <= cb_arb_hi))]
+        cb_df = cb_df[(cb_df['liquidity'].fillna(0) >= cb_liq_lo) & (cb_df['liquidity'].fillna(0) <= cb_liq_hi) |
+                      (cb_df['exchange_liquidity'].fillna(0) >= cb_liq_lo) &
+                      (cb_df['exchange_liquidity'].fillna(0) <= cb_liq_hi)]
+
+        cb_df = cb_df[cb_df['source'].isin(cb_sources) & cb_df['league'].isin(cb_league_sel)
+                      & cb_df['market_key'].isin(cb_category_sel)]
         if cb_alerted_only:
             cb_df = cb_df[cb_df['would_alert'] == True]
 
@@ -3420,8 +3335,14 @@ with tab_crossbook:
                 st.markdown("**By League**")
                 st.dataframe(_cb_breakdown(cb_settled, 'league').head(15), use_container_width=True, hide_index=True)
             with cb_right:
-                st.markdown("**By Market** (normalized across sources)")
+                st.markdown("**By Category**")
                 st.dataframe(_cb_breakdown(cb_settled, 'market_key').head(15), use_container_width=True, hide_index=True)
+                st.markdown("**By Arb % Band**")
+                cb_settled_bands = cb_settled.copy()
+                cb_settled_bands['arb_band'] = pd.cut(
+                    cb_settled_bands['arb_pct'], bins=[-1e9, 1, 2, 4, 1e9],
+                    labels=['<1%', '1-2%', '2-4%', '4%+'])
+                st.dataframe(_cb_breakdown(cb_settled_bands, 'arb_band'), use_container_width=True, hide_index=True)
 
             ODDS_BINS = [(-1e9, -200, '≤-200'), (-200, -110, '-200 to -110'), (-110, 110, '-110 to +110'),
                         (110, 200, '+110 to +200'), (200, 1e9, '+200+')]
@@ -3453,8 +3374,9 @@ with tab_crossbook:
                 st.markdown("---")
 
             st.markdown("**Bet Log**")
-            cb_cols = ['observed_at', 'source', 'league', 'matchup', 'market', 'play_selection',
-                      'play_odds', 'play_book', 'sharp_book', 'sharp_odds', 'tier', 'edge_score',
+            cb_cols = ['observed_at', 'source', 'league', 'market_key', 'matchup', 'market', 'play_selection',
+                      'play_odds', 'play_book', 'sharp_book', 'sharp_odds', 'arb_pct', 'liquidity',
+                      'exchange_liquidity', 'tier', 'edge_score',
                       'smash_score', 'twroi', 'bk_twroi', 'would_alert', 'status', 'profit']
             cb_cols = [c for c in cb_cols if c in cb_df.columns]
             cb_display = cb_df[cb_cols].sort_values('observed_at', ascending=False)
@@ -3462,6 +3384,10 @@ with tab_crossbook:
                         column_config={
                             'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
                             'observed_at': st.column_config.DatetimeColumn('Observed', format='MMM D, h:mm a'),
+                            'arb_pct': st.column_config.NumberColumn('Arb %', format='%.2f%%'),
+                            'liquidity': st.column_config.NumberColumn('Liquidity', format='$%.0f'),
+                            'exchange_liquidity': st.column_config.NumberColumn('Exch. Liquidity', format='$%.0f'),
+                            'market_key': st.column_config.TextColumn('Category'),
                             'twroi': st.column_config.NumberColumn('TWROI', format='%.1f%%'),
                             'bk_twroi': st.column_config.NumberColumn('Book TWROI', format='%.1f%%'),
                         })
